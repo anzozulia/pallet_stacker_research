@@ -1,0 +1,1344 @@
+{
+  "input_summary": {
+    "items_packed": 45,
+    "items_unpacked": 0,
+    "pallets_used": 5,
+    "total_volume_utilisation": 0.685
+  },
+  "pallets": [
+    {
+      "pallet_id": "P001",
+      "dimensions": {
+        "L": 120,
+        "W": 100,
+        "H": 100,
+        "max_weight": 500.0
+      },
+      "utilisation": 0.91,
+      "cog": {
+        "x": 60.0,
+        "y": 46.972,
+        "z": 46.009
+      },
+      "total_weight": 109.0,
+      "items": [
+        {
+          "item_id": "C-01",
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 60,
+            "W": 60,
+            "H": 30
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 12.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": [
+            "C-02"
+          ]
+        },
+        {
+          "item_id": "C-02",
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 30.0
+          },
+          "dimensions": {
+            "L": 60,
+            "W": 60,
+            "H": 30
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 12.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "C-01"
+          ],
+          "supports": [
+            "C-03"
+          ]
+        },
+        {
+          "item_id": "C-03",
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 60.0
+          },
+          "dimensions": {
+            "L": 60,
+            "W": 60,
+            "H": 30
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 12.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "C-02"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "C-04",
+          "position": {
+            "x": 60.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 60,
+            "W": 60,
+            "H": 30
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 12.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": [
+            "C-05"
+          ]
+        },
+        {
+          "item_id": "C-05",
+          "position": {
+            "x": 60.0,
+            "y": 0.0,
+            "z": 30.0
+          },
+          "dimensions": {
+            "L": 60,
+            "W": 60,
+            "H": 30
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 12.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "C-04"
+          ],
+          "supports": [
+            "C-06"
+          ]
+        },
+        {
+          "item_id": "C-06",
+          "position": {
+            "x": 60.0,
+            "y": 0.0,
+            "z": 60.0
+          },
+          "dimensions": {
+            "L": 60,
+            "W": 60,
+            "H": 30
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 12.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "C-05"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "B-01",
+          "position": {
+            "x": 0.0,
+            "y": 60.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 45,
+            "W": 40,
+            "H": 50
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": [
+            "B-02"
+          ]
+        },
+        {
+          "item_id": "B-02",
+          "position": {
+            "x": 0.0,
+            "y": 60.0,
+            "z": 50.0
+          },
+          "dimensions": {
+            "L": 45,
+            "W": 40,
+            "H": 50
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "B-01"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "B-03",
+          "position": {
+            "x": 75,
+            "y": 60,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 45,
+            "W": 40,
+            "H": 50
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": [
+            "B-04"
+          ]
+        },
+        {
+          "item_id": "B-04",
+          "position": {
+            "x": 75,
+            "y": 60,
+            "z": 50.0
+          },
+          "dimensions": {
+            "L": 45,
+            "W": 40,
+            "H": 50
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "B-03"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-01",
+          "position": {
+            "x": 45.0,
+            "y": 60.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 30,
+            "W": 40,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        }
+      ]
+    },
+    {
+      "pallet_id": "P002",
+      "dimensions": {
+        "L": 120,
+        "W": 100,
+        "H": 100,
+        "max_weight": 500.0
+      },
+      "utilisation": 0.805,
+      "cog": {
+        "x": 54.409,
+        "y": 49.247,
+        "z": 42.742
+      },
+      "total_weight": 93.0,
+      "items": [
+        {
+          "item_id": "C-07",
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 60,
+            "W": 60,
+            "H": 30
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 12.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": [
+            "C-08"
+          ]
+        },
+        {
+          "item_id": "C-08",
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 30.0
+          },
+          "dimensions": {
+            "L": 60,
+            "W": 60,
+            "H": 30
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 12.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "C-07"
+          ],
+          "supports": [
+            "C-09"
+          ]
+        },
+        {
+          "item_id": "C-09",
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 60.0
+          },
+          "dimensions": {
+            "L": 60,
+            "W": 60,
+            "H": 30
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 12.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "C-08"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "C-10",
+          "position": {
+            "x": 60.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 60,
+            "W": 60,
+            "H": 30
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 12.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": [
+            "B-09"
+          ]
+        },
+        {
+          "item_id": "B-05",
+          "position": {
+            "x": 0.0,
+            "y": 60.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 45,
+            "W": 40,
+            "H": 50
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": [
+            "B-06"
+          ]
+        },
+        {
+          "item_id": "B-06",
+          "position": {
+            "x": 0.0,
+            "y": 60.0,
+            "z": 50.0
+          },
+          "dimensions": {
+            "L": 45,
+            "W": 40,
+            "H": 50
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "B-05"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "B-07",
+          "position": {
+            "x": 75,
+            "y": 60,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 45,
+            "W": 40,
+            "H": 50
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": [
+            "B-08"
+          ]
+        },
+        {
+          "item_id": "B-08",
+          "position": {
+            "x": 75,
+            "y": 60,
+            "z": 50.0
+          },
+          "dimensions": {
+            "L": 45,
+            "W": 40,
+            "H": 50
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "B-07"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "B-09",
+          "position": {
+            "x": 60.0,
+            "y": 0.0,
+            "z": 30.0
+          },
+          "dimensions": {
+            "L": 50,
+            "W": 45,
+            "H": 40
+          },
+          "orientation": {
+            "perm": [
+              2,
+              1,
+              0
+            ],
+            "name": "HWL"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "C-10"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-02",
+          "position": {
+            "x": 45.0,
+            "y": 60.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 30,
+            "W": 40,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        }
+      ]
+    },
+    {
+      "pallet_id": "P003",
+      "dimensions": {
+        "L": 120,
+        "W": 100,
+        "H": 100,
+        "max_weight": 500.0
+      },
+      "utilisation": 0.66,
+      "cog": {
+        "x": 51.984,
+        "y": 43.175,
+        "z": 46.429
+      },
+      "total_weight": 63.0,
+      "items": [
+        {
+          "item_id": "B-10",
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 40,
+            "W": 45,
+            "H": 50
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": [
+            "B-11"
+          ]
+        },
+        {
+          "item_id": "B-11",
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 50.0
+          },
+          "dimensions": {
+            "L": 40,
+            "W": 45,
+            "H": 50
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "B-10"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "B-12",
+          "position": {
+            "x": 75,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 45,
+            "W": 40,
+            "H": 50
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": [
+            "B-13"
+          ]
+        },
+        {
+          "item_id": "B-13",
+          "position": {
+            "x": 75,
+            "y": 0.0,
+            "z": 50.0
+          },
+          "dimensions": {
+            "L": 45,
+            "W": 40,
+            "H": 50
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "B-12"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "B-14",
+          "position": {
+            "x": 0.0,
+            "y": 55,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 40,
+            "W": 45,
+            "H": 50
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": [
+            "B-15"
+          ]
+        },
+        {
+          "item_id": "B-15",
+          "position": {
+            "x": 0.0,
+            "y": 55,
+            "z": 50.0
+          },
+          "dimensions": {
+            "L": 40,
+            "W": 45,
+            "H": 50
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 8.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "B-14"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-03",
+          "position": {
+            "x": 90,
+            "y": 60,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 30,
+            "W": 40,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-04",
+          "position": {
+            "x": 40.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 30,
+            "W": 40,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-05",
+          "position": {
+            "x": 40.0,
+            "y": 40.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 30,
+            "W": 40,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        }
+      ]
+    },
+    {
+      "pallet_id": "P004",
+      "dimensions": {
+        "L": 120,
+        "W": 100,
+        "H": 100,
+        "max_weight": 500.0
+      },
+      "utilisation": 0.63,
+      "cog": {
+        "x": 61.667,
+        "y": 51.111,
+        "z": 35.0
+      },
+      "total_weight": 45.0,
+      "items": [
+        {
+          "item_id": "A-06",
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 30,
+            "W": 40,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-07",
+          "position": {
+            "x": 80,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 40,
+            "W": 30,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-08",
+          "position": {
+            "x": 0.0,
+            "y": 60,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 30,
+            "W": 40,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-09",
+          "position": {
+            "x": 90,
+            "y": 60,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 30,
+            "W": 40,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-10",
+          "position": {
+            "x": 30.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 40,
+            "W": 30,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-11",
+          "position": {
+            "x": 80,
+            "y": 30.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 40,
+            "W": 30,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-12",
+          "position": {
+            "x": 30.0,
+            "y": 60,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 30,
+            "W": 40,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-13",
+          "position": {
+            "x": 60.0,
+            "y": 60,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 30,
+            "W": 40,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-14",
+          "position": {
+            "x": 30.0,
+            "y": 30.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 40,
+            "W": 30,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        }
+      ]
+    },
+    {
+      "pallet_id": "P005",
+      "dimensions": {
+        "L": 120,
+        "W": 100,
+        "H": 100,
+        "max_weight": 500.0
+      },
+      "utilisation": 0.42,
+      "cog": {
+        "x": 64.167,
+        "y": 42.5,
+        "z": 35.0
+      },
+      "total_weight": 30.0,
+      "items": [
+        {
+          "item_id": "A-15",
+          "position": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 30,
+            "W": 40,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-16",
+          "position": {
+            "x": 80,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 40,
+            "W": 30,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-17",
+          "position": {
+            "x": 0.0,
+            "y": 60,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 30,
+            "W": 40,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-18",
+          "position": {
+            "x": 90,
+            "y": 60,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 30,
+            "W": 40,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              0,
+              1,
+              2
+            ],
+            "name": "LWH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-19",
+          "position": {
+            "x": 30.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 40,
+            "W": 30,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        },
+        {
+          "item_id": "A-20",
+          "position": {
+            "x": 80,
+            "y": 30.0,
+            "z": 0.0
+          },
+          "dimensions": {
+            "L": 40,
+            "W": 30,
+            "H": 70
+          },
+          "orientation": {
+            "perm": [
+              1,
+              0,
+              2
+            ],
+            "name": "WLH"
+          },
+          "weight": 5.0,
+          "support_ratio": 1.0,
+          "supported_by": [
+            "floor"
+          ],
+          "supports": []
+        }
+      ]
+    }
+  ],
+  "unpacked_items": []
+}

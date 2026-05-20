@@ -1,0 +1,108 @@
+Case                                   In  LB  Out  Unp   Util    Time  Status
+------------------------------------------------------------------------------
+A1 empty input                          0   0    0    0  0.0%      0ms  PASS
+A2 single fitting box                   1   1    1    0  2.2%      2ms  PASS
+A3 single too-big box                   1   1    0    1  0.0%      1ms  PASS
+A4 box exactly = pallet                 1   1    1    0 100.0%      2ms  PASS
+A5 single too-heavy box                 1   1    0    1  0.0%      1ms  PASS
+B1 perfect 2×2×2 fill                   8   1    1    0 100.0%     47ms  PASS
+B2 12 boxes -> 2 pallets               12   2    2    0 75.0%     87ms  PASS
+B3 4 large boxes -> 2 pallets exact     4   2    2    0 100.0%     15ms  PASS
+B4 100 tiny boxes -> 1 pallet         100   1    1    0 66.7%  29.75s  PASS
+C1 user's headline mix                 45   4    5    0 68.5%    417ms  PASS
+C2 BR-lite (5 SKU × 8)                 40   3    4    0 65.0%    642ms  PASS
+C3 Pareto-distributed 30               30   1    2    0 40.5%    920ms  PASS
+C4 stress 80 boxes                     80   3    4    0 66.5%   2.83s  PASS
+D1 base: all constraints relaxed       45   4    5    0 68.5%    513ms  PASS
+D2 + support_ratio=0.8 (default)       45   4    5    0 68.5%    520ms  PASS
+D3 + support_ratio=1.0 (no overhang)   45   4    5    0 68.5%    541ms  PASS
+D4 + binding weight limit              45   4    5    0 68.5%    550ms  PASS
+D5 + tight CoG envelope                45   4    5    0 68.5%    534ms  PASS
+D6 + this-side-up for all              45   4    5    0 68.5%    357ms  PASS
+D7 + NO rotation at all                45   4    5    0 68.5%    210ms  PASS
+D8 + fragile B boxes                   45   4    6    0 57.1%    676ms  PASS
+E1 boxes that MUST rotate               8   1    1    0 48.0%     40ms  PASS
+E2 all fragile                         12   1    1    0 30.0%    241ms  PASS
+E3 weight forces sparse layout          6   1    3    0 10.7%     49ms  PASS
+E4 needle eye: many almost-too-big      6   5    6    0 82.7%     33ms  PASS
+F1 e-commerce: 50 small + 3 big        53   1    1    0 72.5%   6.56s  PASS
+F2 pharma: many fragile               120   1    1    0 30.0%  18.37s  PASS
+F3 heavy industrial: few big            8   1    2    0 40.0%     25ms  PASS
+
+Constraint sensitivity on the 45-box headline instance
+(showing that constraints leave volume-bound packings unchanged)
+========================================================================
+Variant                                   Pallets    Δ    Util
+------------------------------------------------------------------------
+base: all constraints relaxed                   5    —  68.5%
++ support_ratio=0.8 (default)                   5    —  68.5%
++ support_ratio=1.0 (no overhang)               5    —  68.5%
++ binding weight limit                          5    —  68.5%
++ tight CoG envelope                            5    —  68.5%
++ this-side-up for all                          5    —  68.5%
++ NO rotation at all                            5    —  68.5%
++ fragile B boxes                               6   +1  57.1%
+
+Constraint impact (each case designed so the constraint binds)
+==============================================================================
+Constraint                                        Pallets    Util  Unp
+------------------------------------------------------------------------------
+SUPPORT 0.4 (allows partial-support stacking)           1  49.0%    0
+SUPPORT 0.8 (default)                                   1  49.0%    0
+SUPPORT 1.0 (no overhang anywhere)                      1  49.0%    0
+
+WEIGHT: 10000 kg/pallet (volume only)                   1  53.3%    0
+WEIGHT: 300 kg/pallet (5 boxes max)                     2  26.7%    0
+WEIGHT: 120 kg/pallet (2 boxes max)                     5  10.7%    0
+
+COG: ±50% (loose)                                       1  21.3%    0
+COG: ±25% (default)                                     1  21.3%    0
+COG: ±5% (very tight)                                   2  10.7%    0
+
+ROTATION: 6 orientations                                1  54.0%    0
+ROTATION: this-side-up (2 orientations)                 1  54.0%    0
+ROTATION: fixed (1 orientation)                         1  54.0%    0
+
+FRAGILITY: all stackable                                1  72.0%    0
+FRAGILITY: half fragile                                 2  36.0%    0
+FRAGILITY: all fragile (no stacking)                    2  36.0%    0
+
+Multi-start ablation
+========================================================================
+
+Instance: 45-box headline
+  Trials  Pallets     Util     Time
+----------------------------------------
+       1        5   68.5%    160ms
+       2        5   68.5%    160ms
+       5        5   68.5%    162ms
+      10        5   68.5%    203ms
+      25        5   68.5%    534ms
+      50        5   68.5%    1.14s
+
+Instance: Pareto 30 (more heterogeneous)
+  Trials  Pallets     Util     Time
+----------------------------------------
+       1        2   40.5%    364ms
+       2        2   40.5%    351ms
+       5        2   40.5%    356ms
+      10        2   40.5%    454ms
+      25        2   40.5%    1.17s
+      50        2   40.5%    2.21s
+
+Instance: BR-lite 40 boxes
+  Trials  Pallets     Util     Time
+----------------------------------------
+       1        4   65.0%    267ms
+       2        4   65.0%    284ms
+       5        4   65.0%    279ms
+      10        4   65.0%    326ms
+      25        4   65.0%    793ms
+      50        4   65.0%    1.57s
+
+Seed variance (45-box instance, 10 seeds, 25 trials each)
+========================================================================
+  Pallets: min=5 max=5 mean=5.00 stdev=0.00
+  Utilisation: min=68.5% max=68.5% mean=68.5%
+
+Overall: 28/28 cases passed.
