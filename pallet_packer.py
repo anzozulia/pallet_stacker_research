@@ -188,6 +188,10 @@ class PackerConfig:
     brkga_elite_fraction: float = 0.20
     brkga_mutant_fraction: float = 0.15
     brkga_p_elite: float = 0.70
+    # Cap on N above which BRKGA falls back to multi-start (BRKGA's overhead
+    # doesn't pay off for large inputs in our decoder — the placement step
+    # dominates and BRKGA explores the same local optima as multi-start).
+    brkga_n_threshold: int = 40
 
 
 # ---------------------------------------------------------------------------
@@ -780,7 +784,12 @@ class PalletPacker:
         and return the best across all of them.
         """
         def search(items: List[Box]) -> PackResult:
-            if self.config.use_brkga:
+            # BRKGA's exploration value drops with N (placement decoder
+            # dominates cost; the same heuristic local optimum is reached
+            # regardless of chromosome). Fall back to multi-start above
+            # the configured N threshold.
+            if (self.config.use_brkga and
+                    len(items) <= self.config.brkga_n_threshold):
                 return self._brkga_search(items)
             return self._multi_start(items)
 
