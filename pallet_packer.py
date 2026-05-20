@@ -600,9 +600,20 @@ class PalletPacker:
         """Find the largest valid (rotation, n_x, n_y, n_z) block.
 
         Scoring varies by strategy — each gives different residual-space shapes.
+        Blocks are also constrained so total block weight ≤ pallet weight
+        capacity; an over-weight block could never be placed and would silently
+        strand its member boxes as unpacked.
         """
         best = None
         L, W = self.pallet.length, self.pallet.width
+        # Cap on units per block by total weight (any block must fit on a pallet).
+        max_units_by_weight = K
+        if template.weight > 0 and self.pallet.max_weight < float("inf"):
+            max_units_by_weight = max(1, int(self.pallet.max_weight // template.weight))
+            if max_units_by_weight < self.config.block_threshold:
+                # Even a minimum-size block would be over-weight — skip blocks
+                # for this group entirely.
+                return None
         for rot in template.allowed_rotations:
             dx, dy, dz = template.dims_for(rot)
             if dx <= 0 or dy <= 0 or dz <= 0:
@@ -613,9 +624,9 @@ class PalletPacker:
             if template.weight > 0 and template.max_load_on_top < float("inf"):
                 max_stack_load = int(template.max_load_on_top / template.weight) + 1
                 max_nz = min(max_nz, max_stack_load)
-            max_nx = min(max_nx, K)
-            max_ny = min(max_ny, K)
-            max_nz = min(max_nz, K)
+            max_nx = min(max_nx, K, max_units_by_weight)
+            max_ny = min(max_ny, K, max_units_by_weight)
+            max_nz = min(max_nz, K, max_units_by_weight)
             if max_nx < 1 or max_ny < 1 or max_nz < 1:
                 continue
 
@@ -623,7 +634,7 @@ class PalletPacker:
                 # Pure vertical column: (1, 1, max_nz). Smallest footprint.
                 if max_nz >= 2:
                     total = max_nz  # nx=1, ny=1, nz=max_nz
-                    if total <= K:
+                    if total <= K and total <= max_units_by_weight:
                         score = (total, max_nz, -dx * dy)
                         if best is None or score > best[0]:
                             best = (score, rot, 1, 1, max_nz)
@@ -631,21 +642,14 @@ class PalletPacker:
 
             if strategy == "layer":
                 # Floor layer: (max_nx, max_ny, 1). Smallest vertical footprint.
-                total = max_nx * max_ny
-                if total <= K:
-                    score = (total, -dx * max_nx * dy * max_ny)
-                    if best is None or score > best[0]:
-                        best = (score, rot, max_nx, max_ny, 1)
-                else:
-                    # Find largest grid ≤ K
-                    for nx in range(max_nx, 0, -1):
-                        for ny in range(max_ny, 0, -1):
-                            t = nx * ny
-                            if t <= K:
-                                score = (t, -dx * nx * dy * ny)
-                                if best is None or score > best[0]:
-                                    best = (score, rot, nx, ny, 1)
-                                break
+                for nx in range(max_nx, 0, -1):
+                    for ny in range(max_ny, 0, -1):
+                        t = nx * ny
+                        if t <= K and t <= max_units_by_weight:
+                            score = (t, -dx * nx * dy * ny)
+                            if best is None or score > best[0]:
+                                best = (score, rot, nx, ny, 1)
+                            break
                 continue
 
             # strategy == 'max': largest block with non-spanning preference.
@@ -653,7 +657,7 @@ class PalletPacker:
                 for ny in range(max_ny, 0, -1):
                     for nz in range(max_nz, 0, -1):
                         total = nx * ny * nz
-                        if total <= K:
+                        if total <= K and total <= max_units_by_weight:
                             block_l = nx * dx
                             block_w = ny * dy
                             block_fp = block_l * block_w
@@ -663,50 +667,6 @@ class PalletPacker:
                                 best = (score, rot, nx, ny, nz)
                             break
         return best
-
-    def _build_blocks(
-        self, boxes: List[Box]
-    ) -> Tuple[List[Box], List[Tuple]]:
-        """Greedy: form super-blocks from identical groups; remainders pass through.
-
-        Returns (items_for_packing, block_specs) where each block_spec is a
-        tuple of (super_box, template_box, rotation, nx, ny, nz, member_ids).
-        """
-        groups = self._group_identical_boxes(boxes)
-        items: List[Box] = []
-        specs: List[Tuple] = []
-        counter = 0
-        for _key, group_boxes in groups.items():
-            remaining = list(group_boxes)
-            while len(remaining) >= self.config.block_threshold:
-                best = self._find_best_block(remaining[0], len(remaining))
-                if best is None:
-                    break
-                _score, rot, nx, ny, nz = best
-                size = nx * ny * nz
-                if size < self.config.block_threshold:
-                    break  # block would be too small to bother
-                members = remaining[:size]
-                remaining = remaining[size:]
-                tmpl = members[0]
-                dx, dy, dz = tmpl.dims_for(rot)
-                block_id = f"__BLOCK_{counter:03d}"
-                counter += 1
-                super_box = Box(
-                    id=block_id,
-                    length=nx * dx,
-                    width=ny * dy,
-                    height=nz * dz,
-                    weight=sum(b.weight for b in members),
-                    max_load_on_top=tmpl.max_load_on_top,  # top face = top layer's
-                    allowed_rotations=NO_ROTATION,  # rotation baked into block dims
-                    requires_full_support=True,
-                )
-                items.append(super_box)
-                specs.append((super_box, tmpl, rot, nx, ny, nz,
-                              [b.id for b in members]))
-            items.extend(remaining)
-        return items, specs
 
     def _expand_blocks(
         self, result: PackResult, specs: List[Tuple]
@@ -825,7 +785,11 @@ class PalletPacker:
             return self._multi_start(items)
 
         def quality(res: PackResult) -> Tuple:
-            return (res.num_pallets, len(res.unpacked),
+            # Unpacked items are the worst outcome — rank them first.
+            # A solution that packs everything in 5 pallets must beat a
+            # solution that leaves items unpacked in 0 pallets (a "0 pallets"
+            # result with unpacked items is a failed packing, not a win).
+            return (len(res.unpacked), res.num_pallets,
                     -res.total_volume_utilisation)
 
         candidates: List[PackResult] = []
@@ -875,7 +839,7 @@ class PalletPacker:
         best_result: Optional[PackResult] = None
 
         def quality_score(res: PackResult) -> Tuple:
-            return (res.num_pallets, len(res.unpacked), -res.total_volume_utilisation)
+            return (len(res.unpacked), res.num_pallets, -res.total_volume_utilisation)
 
         for order, strat, sel in trials:
             res = self._pack_once(boxes, order, strategy=strat, pallet_selection=sel)
@@ -916,7 +880,7 @@ class PalletPacker:
             return self._pack_once(boxes, order, strategy=strat, pallet_selection=sel)
 
         def fitness(res: PackResult) -> Tuple:
-            return (res.num_pallets, len(res.unpacked), -res.total_volume_utilisation)
+            return (len(res.unpacked), res.num_pallets, -res.total_volume_utilisation)
 
         # Seed the population with the deterministic heavy/big-first ordering
         # encoded as monotonic keys (so the BRKGA at worst matches multi-start).

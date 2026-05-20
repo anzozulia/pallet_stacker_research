@@ -1,0 +1,31 @@
+
+====================================================================================================
+BENCHMARK SUITE  (BRKGA pop=16, gens=4)
+====================================================================================================
+case                                     |  LB |   v1  util      t |   v2  util      t |  Δp     Δu
+---------------------------------------------------------------------------------------------------
+A1 empty input                           |   0 |   0p   0%  0.00s |   0p   0%  0.00s |  +0  +0.0% 
+A2 single fitting box                    |   1 |   1p   2%  0.00s |   1p   2%  0.01s |  +0  +0.0% 
+A3 single too-big box                    |   1 |   0p   0%  0.00s |   0p   0%  0.00s |  +0  +0.0% 
+A4 box exactly = pallet                  |   1 |   1p 100%  0.00s |   1p 100%  0.01s |  +0  +0.0% 
+A5 single too-heavy box                  |   1 |   0p   0%  0.00s |   0p   0%  0.01s |  +0  +0.0% 
+B1 perfect 2×2×2 fill                    |   1 |   1p 100%  0.07s |   1p 100%  0.24s |  +0  +0.0% 
+B2 12 boxes -> 2 pallets                 |   2 |   2p  75%  0.14s |   2p  75%  0.42s |  +0  +0.0% 
+B3 4 large boxes -> 2 pallets exact      |   2 |   2p 100%  0.02s |   2p 100%  0.07s |  +0  +0.0% 
+B4 100 tiny boxes -> 1 pallet            |   1 |   1p  67% 48.11s |   1p  67% 160.02s |  +0  +0.0% 
+C1 user's headline mix                   |   4 |   5p  68%  0.62s |   5p  68%  3.06s |  +0  +0.0% 
+C2 BR-lite (5 SKU × 8)                   |   3 |   4p  65%  0.95s |   4p  65%  4.64s |  +0  +0.0% 
+C3 Pareto-distributed 30                 |   1 |   2p  41%  1.37s |   2p  41%  4.76s |  +0  +0.0% 
+C4 stress 80 boxes                       |   3 |   4p  67%  4.34s |   4p  67% 17.98s |  +0  +0.0% 
+D1 base: all constraints relaxed         |   4 |   5p  68%  0.96s |   5p  68%  2.95s |  +0  +0.0% 
+D2 + support_ratio=0.8 (default)         |   4 |   5p  68%  0.79s |   5p  68%  3.01s |  +0  +0.0% 
+D3 + support_ratio=1.0 (no overhang)     |   4 |   5p  68%  0.77s |   5p  68%  2.84s |  +0  +0.0% 
+D4 + binding weight limit                |   4 |   5p  68%  0.78s |   5p  68%  3.03s |  +0  +0.0% 
+D5 + tight CoG envelope                  |   4 |   5p  68%  0.78s |   5p  68%  3.05s |  +0  +0.0% 
+D6 + this-side-up for all                |   4 |   5p  68%  0.53s |   5p  68%  2.05s |  +0  +0.0% 
+D7 + NO rotation at all                  |   4 |   5p  68%  0.37s |   5p  68%  1.13s |  +0  +0.0% 
+D8 + fragile B boxes                     |   4 |   6p  57%  1.06s |   6p  57%  3.63s |  +0  +0.0% 
+E1 boxes that MUST rotate                |   1 |   1p  48%  0.06s |   1p  48%  0.30s |  +0  +0.0% 
+E2 all fragile                           |   1 |   1p  30%  0.37s |   1p  30%  1.16s |  +0  +0.0% 
+E3 weight forces sparse layout           |   1 |   3p  11%  0.07s |   0p   0%  0.24s |  -3 -10.7% [OK] better
+E4 needle eye: many almost-too-big       |   5 |   6p  83%  0.05s |   6p  83%  0.15s |  +0  +0.0% 
