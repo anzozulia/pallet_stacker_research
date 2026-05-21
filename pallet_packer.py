@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import random
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, List, Optional, Tuple
@@ -188,10 +189,89 @@ class PackerConfig:
     brkga_elite_fraction: float = 0.20
     brkga_mutant_fraction: float = 0.15
     brkga_p_elite: float = 0.70
-    # Cap on N above which BRKGA falls back to multi-start (BRKGA's overhead
-    # doesn't pay off for large inputs in our decoder — the placement step
-    # dominates and BRKGA explores the same local optima as multi-start).
-    brkga_n_threshold: int = 40
+    # Cap on N above which BRKGA falls back to multi-start. The original v2
+    # cutoff of 40 was conservative — BRKGA was given a deterministic decoder
+    # and couldn't escape the same local optimum on larger instances. With
+    # GRASP randomization (grasp_alpha > 1) the decoder is now non-deterministic
+    # so BRKGA can usefully explore at higher N. Set to None to disable the
+    # fallback entirely.
+    brkga_n_threshold: Optional[int] = 200
+
+    # ---- Phase 2 improvements (opt-in) -----------------------------------
+    # SKU-consistent rotation pre-decision (Bortfeldt-Gehring 2001).
+    # For each SKU with multiple units, score each allowed rotation by the
+    # number of boxes that fit per pallet layer; lock in the winner before
+    # search. Cuts search space, helps cases where mixed-rotation packings
+    # would fragment a structured layout.
+    sku_consistent_rotation: bool = False
+    # GRASP randomization in placement (Parreño et al. 2008). Within a
+    # placement step, pick uniformly among the top-`grasp_alpha` best
+    # candidates instead of always taking the single best. Provides BRKGA
+    # / multi-start with real per-decoder variation. 1 = current behavior.
+    grasp_alpha: int = 1
+    # Ejection chains (Crainic-Perboli-Tadei 2009 + Faroe-Pisinger-Zachariasen
+    # 2003). After greedy packing, displace one or more placed items, try to
+    # fit currently-unpacked items, then re-place the displaced items.
+    # Iterate until no improvement or budget exhausted.
+    use_ejection_chains: bool = False
+    ejection_max_depth: int = 2          # number of items to remove in one chain
+    ejection_max_iters: int = 200         # outer loop budget
+    # Safety net: when GRASP / BRKGA randomization is enabled, also run
+    # deterministic equivalents (multi_start, deterministic-BRKGA on
+    # original boxes, block-building-without-GRASP) and pick the best
+    # across all candidates. This guarantees Phase 2 features can only
+    # add value, never destroy a v1- or v2-baseline win. Disable for
+    # benchmarking when you want to measure raw Phase 2 contribution.
+    use_safety_net: bool = True
+    # Cap on the number of pallets the packer is allowed to open. When set
+    # to 1, this turns the multi-pallet packer into a single-container
+    # max-utilization packer (the Bischoff-Ratcliff objective). Items that
+    # don't fit on the capped set of pallets end up in `result.unpacked`.
+    # Default None = unlimited (the original multi-pallet behavior).
+    max_pallets: Optional[int] = None
+    # Candidate-selection metric. Controls how the candidate set's
+    # min(quality) picks between competing packings. Options:
+    #   "min_unpacked"   — (unpacked, pallets, -util_overall). Default.
+    #                      Best for multi-pallet logistics: pack
+    #                      everything first, then minimize pallet count.
+    #   "max_util"       — (-util_overall, unpacked, pallets). Best for
+    #                      single-container max-utilization (the BR
+    #                      objective). Prioritizes density on the
+    #                      assigned pallet(s) over fitting all items.
+    optimize: str = "min_unpacked"
+    # Phase 2e — layer-building decoder (George-Robinson 1980;
+    # Bischoff-Ratcliff 1995). Builds horizontal layer-slabs along the
+    # container's longest axis. Each layer's depth is set by a seed item;
+    # the slab is filled by recursively packing on a virtual sub-pallet.
+    # Produces qualitatively different packings than extreme-point —
+    # especially on heterogeneous mixes (BR1-7, F13).
+    use_layer_building: bool = False
+    # Which axis to layer along ('x' = pallet length, 'y' = width,
+    # 'z' = height, or 'all' = try all three).
+    # Default 'all' tries every orientation (with 2 seed strategies per
+    # axis = 6 candidate packings) and picks the best — cheap because
+    # each layer-decoder is one decode, ~milliseconds at small N.
+    layer_axis: str = "all"
+    # Phase 4 — MIP polish (do Nascimento-Queiroz-Junqueira 2021, OR-Tools
+    # CP-SAT). Solve the 3D-BPP exactly (or best-within-budget) for small
+    # sub-problems. Provides a "provably optimal-or-close" candidate
+    # alongside the heuristics.
+    use_mip_polish: bool = False
+    # Maximum N for which to attempt the MIP. With Q2 (quantitative
+    # support) + Q3 (warm-starting from heuristic), CP-SAT can converge
+    # to OPTIMAL on N=45 in ~15s and to FEASIBLE-better-than-v1 on
+    # N=40 in 30s. The default 50 is calibrated for this regime; below
+    # 50, MIP almost always converges to a useful solution within
+    # mip_time_limit_s.
+    mip_n_threshold: int = 50
+    # Wall-clock budget for the CP-SAT solve in seconds.
+    mip_time_limit_s: float = 30.0
+    # CP-SAT parallel workers. 1 = single-threaded — empirically much
+    # faster on our model (the parallel modes seem to interfere with the
+    # warm-start hint, possibly because each worker re-explores from
+    # scratch). On C1 (N=45) at default time-limit: 1 worker reaches
+    # OPTIMAL in 12s; 4 workers don't converge in 30s.
+    mip_num_workers: int = 1
 
 
 # ---------------------------------------------------------------------------
@@ -200,10 +280,14 @@ class PackerConfig:
 class PalletState:
     """State of one pallet during packing."""
 
-    def __init__(self, pallet: Pallet, pallet_id: str, config: PackerConfig):
+    def __init__(self, pallet: Pallet, pallet_id: str, config: PackerConfig,
+                 rng: Optional[random.Random] = None):
         self.pallet = pallet
         self.pallet_id = pallet_id
         self.config = config
+        # RNG for GRASP randomization. If None, a fresh seeded RNG is used —
+        # but for reproducibility callers should pass in the packer's RNG.
+        self._rng = rng if rng is not None else random.Random(config.seed)
         self.placements: List[Placement] = []
         # Candidate positions for the next box's back-left-bottom corner.
         # Seeded with the floor origin; `try_place` additionally explores
@@ -367,8 +451,15 @@ class PalletState:
         loading: pure EP heuristics can only place adjacent to existing boxes
         and so will never reach diagonally-opposite placements on their own,
         which CoG envelope constraints often require.
+
+        When `config.grasp_alpha > 1`, instead of always picking the single
+        best-scoring placement we pick uniformly among the top-α (Parreño
+        et al. 2008). This gives BRKGA / multi-start non-trivial per-decode
+        variation so they can actually explore the solution space — the
+        deterministic best-only decoder converged every chromosome to the
+        same packing (the cause of the v2 ablation finding).
         """
-        best: Optional[Tuple[Placement, Tuple]] = None
+        feasible: List[Tuple[Tuple, Placement]] = []
         candidates: List[Tuple[float, float, float]] = list(self.extreme_points)
         L, W = self.pallet.length, self.pallet.width
 
@@ -386,11 +477,19 @@ class PalletState:
                 if not self.feasible(cand):
                     continue
                 score = self._score_placement(cand, strategy)
-                if best is None or score < best[1]:
-                    best = (cand, score)
-        if best is None:
+                feasible.append((score, cand))
+        if not feasible:
             return False
-        self._commit(best[0])
+        feasible.sort(key=lambda t: t[0])
+        alpha = max(1, self.config.grasp_alpha)
+        if alpha == 1:
+            chosen = feasible[0][1]
+        else:
+            # Pick uniformly among the top-α; if fewer feasible than α, the
+            # pool is just everything we have.
+            pool = feasible[:alpha]
+            chosen = self._rng.choice(pool)[1]
+        self._commit(chosen)
         return True
 
     def _score_placement(self, cand: Placement, strategy: str) -> Tuple:
@@ -537,6 +636,85 @@ class PalletPacker:
         self.pallet = pallet
         self.config = config or PackerConfig()
         self._rng = random.Random(self.config.seed)
+
+    # -------- SKU-consistent rotation (Bortfeldt-Gehring 2001) ------------
+    def _lock_sku_rotation(self, boxes: List[Box]) -> List[Box]:
+        """For each SKU with multiple units, lock in the most space-efficient
+        rotation as the only allowed one.
+
+        Algorithm: for each group of interchangeable boxes (same dims, weight,
+        same rotation set), compute per allowed rotation the units that fit
+        a single pallet via grid: `floor(L_eff/dx) * floor(W_eff/dy) *
+        floor(H/dz)`. With overhang enabled, L_eff = L + max_overhang and
+        W_eff similarly (matching the asymmetric overhang in
+        _within_pallet — boxes extend off the +x and +y edges only).
+        Without overhang, L_eff = L. The rotation with the highest grid count
+        is the layout-most-efficient for that SKU; drop all other rotations
+        for those boxes.
+
+        Returns a NEW list of Box objects with restricted `allowed_rotations`.
+        Original objects are not mutated; this keeps the caller's data safe
+        if they reuse the same Box list across multiple PalletPacker calls.
+
+        Tie-breaking: when multiple rotations tie on grid count, the one
+        with the smallest "wasted edge" (sum of L_eff%dx and W_eff%dy) wins
+        — this minimises footprint slack and tends to favour aspect ratios
+        that interlock well with other SKUs.
+
+        Skipped for:
+          - SKU groups with only one unit (rotation freedom is fine).
+          - Boxes whose `allowed_rotations` is already a single rotation.
+          - Boxes where no rotation fits — leave alone so packing surfaces
+            the infeasibility via the unpacked list.
+        """
+        groups = self._group_identical_boxes(boxes)
+        rebuilt: List[Box] = []
+        ov = self.pallet.max_overhang if self.config.allow_pallet_overhang else 0.0
+        L_eff = self.pallet.length + ov
+        W_eff = self.pallet.width + ov
+        H = self.pallet.height
+        for _key, members in groups.items():
+            if len(members) <= 1:
+                rebuilt.extend(members)
+                continue
+            template = members[0]
+            if len(template.allowed_rotations) <= 1:
+                rebuilt.extend(members)
+                continue
+            best_rot = None
+            best_score: Optional[Tuple[int, float]] = None
+            for rot in template.allowed_rotations:
+                dx, dy, dz = template.dims_for(rot)
+                if dx <= 0 or dy <= 0 or dz <= 0:
+                    continue
+                if dx > L_eff + EPS or dy > W_eff + EPS or dz > H + EPS:
+                    continue
+                nx = int(L_eff // dx)
+                ny = int(W_eff // dy)
+                nz = int(H // dz)
+                grid = nx * ny * nz
+                if grid <= 0:
+                    continue
+                slack = (L_eff - nx * dx) + (W_eff - ny * dy)
+                score = (grid, -slack)
+                if best_score is None or score > best_score:
+                    best_score = score
+                    best_rot = rot
+            if best_rot is None:
+                rebuilt.extend(members)
+                continue
+            locked = [best_rot]
+            for b in members:
+                rebuilt.append(Box(
+                    id=b.id,
+                    length=b.length, width=b.width, height=b.height,
+                    weight=b.weight,
+                    max_load_on_top=b.max_load_on_top,
+                    allowed_rotations=locked,
+                    group=b.group,
+                    requires_full_support=b.requires_full_support,
+                ))
+        return rebuilt
 
     # -------- block-building (Eley 2002 / Bortfeldt 2000) -----------------
     def _group_identical_boxes(self, boxes: List[Box]) -> dict:
@@ -707,7 +885,7 @@ class PalletPacker:
                                 z=p.z + k * dz,
                             ))
                             idx += 1
-            new_st = PalletState(st.pallet, st.pallet_id, st.config)
+            new_st = PalletState(st.pallet, st.pallet_id, st.config, rng=self._rng)
             new_st.placements = expanded
             new_st.total_weight = st.total_weight
             new_pallets.append(new_st)
@@ -765,9 +943,15 @@ class PalletPacker:
                         placed = True
                         break
             if not placed:
+                # Respect max_pallets cap (BR-style single-container mode).
+                if (self.config.max_pallets is not None and
+                        len(pallets) >= self.config.max_pallets):
+                    unpacked.append(box)
+                    continue
                 st = PalletState(self.pallet,
                                  pallet_id=f"P{len(pallets) + 1:03d}",
-                                 config=self.config)
+                                 config=self.config,
+                                 rng=self._rng)
                 if st.try_place(box, strategy=strategy):
                     pallets.append(st)
                     placed = True
@@ -783,37 +967,1307 @@ class PalletPacker:
         strategies (no-blocks, max-blocks, column-blocks, layer-blocks)
         and return the best across all of them.
         """
+        # Phase 2a: SKU-lock candidate set. We keep BOTH locked and unlocked
+        # box lists so the search can take the best across both — SKU lock
+        # is greedy per-SKU and can break joint-SKU interlock layouts (F3),
+        # so it's not safe to apply unconditionally. The candidate-set
+        # approach is the simplest fix: try both, keep the best.
+        box_variants: List[List[Box]] = [boxes]
+        if self.config.sku_consistent_rotation:
+            locked = self._lock_sku_rotation(boxes)
+            # Only add if SKU lock actually changed something.
+            changed = any(
+                set(r.name for r in a.allowed_rotations) !=
+                set(r.name for r in b.allowed_rotations)
+                for a, b in zip(boxes, locked)
+            )
+            if changed:
+                box_variants.append(locked)
+
         def search(items: List[Box]) -> PackResult:
-            # BRKGA's exploration value drops with N (placement decoder
-            # dominates cost; the same heuristic local optimum is reached
-            # regardless of chromosome). Fall back to multi-start above
-            # the configured N threshold.
+            # BRKGA's exploration value drops with N when the decoder is
+            # deterministic (every chromosome converges to the same packing).
+            # With GRASP randomization (grasp_alpha > 1) the decoder is
+            # now non-deterministic, so BRKGA can usefully explore at higher N.
+            threshold = self.config.brkga_n_threshold
             if (self.config.use_brkga and
-                    len(items) <= self.config.brkga_n_threshold):
+                    (threshold is None or len(items) <= threshold)):
                 return self._brkga_search(items)
             return self._multi_start(items)
 
         def quality(res: PackResult) -> Tuple:
-            # Unpacked items are the worst outcome — rank them first.
-            # A solution that packs everything in 5 pallets must beat a
-            # solution that leaves items unpacked in 0 pallets (a "0 pallets"
-            # result with unpacked items is a failed packing, not a win).
+            # Two ranking modes:
+            #   "min_unpacked": Unpacked items are the worst outcome.
+            #                  Then minimize pallets, then maximize util.
+            #                  Best for multi-pallet logistics.
+            #   "max_util":    Maximize total packed volume / pallet
+            #                  capacity first. Best for single-container
+            #                  (BR-style) where leaving 1 small item out
+            #                  to gain 2pp density is worth it.
+            if self.config.optimize == "max_util":
+                # Higher util wins; unpacked count and pallet count are
+                # tiebreakers.
+                return (-res.total_volume_utilisation,
+                        len(res.unpacked), res.num_pallets)
             return (len(res.unpacked), res.num_pallets,
                     -res.total_volume_utilisation)
 
         candidates: List[PackResult] = []
-        # Baseline: search without block-building (always tried).
-        candidates.append(search(boxes))
+        # Baseline search for each box variant (original + optionally locked).
+        for variant in box_variants:
+            candidates.append(search(variant))
 
-        # Optional: try each block-building strategy.
+        # Safety net: guarantee result is ≥ v1 quality AND ≥ original-v2
+        # (block-building + BRKGA without GRASP) quality. Without this,
+        # Phase 2 randomization (GRASP) and per-SKU rotation locking can
+        # destroy specific wins that depend on deterministic decoding or
+        # SKU-flexible rotation (e.g. F3's interlock layout).
+        #
+        # Implementation: re-run a minimal set of candidate paths with
+        # GRASP disabled, on the ORIGINAL boxes only (locked-variant is
+        # already covered above by the Phase 2 candidates).
+        need_safety = (
+            self.config.use_safety_net and
+            (self.config.grasp_alpha > 1 or self.config.use_brkga)
+        )
+        if need_safety:
+            saved_alpha = self.config.grasp_alpha
+            saved_brkga = self.config.use_brkga
+            saved_rng = self._rng
+            # Fresh RNG so safety-net BRKGA explores the canonical chromosome
+            # subspace regardless of how much RNG the Phase 2 path consumed.
+            self._rng = random.Random(self.config.seed)
+            self.config.grasp_alpha = 1
+            try:
+                # (1) Deterministic search on the original boxes — this is
+                #     the path that finds F3's 1p/90% (BRKGA on individual
+                #     boxes without GRASP picks the interlock layout).
+                if saved_brkga:
+                    self.config.use_brkga = True
+                    candidates.append(search(boxes))
+                # (2) Pure v1 multi-start (no BRKGA, no GRASP) — absolute v1
+                #     guarantee.
+                self.config.use_brkga = False
+                candidates.append(self._multi_start(boxes))
+                # (3) Deterministic BRKGA + block-building — orig-v2 guarantee
+                #     for cases where blocks help.
+                if saved_brkga and self.config.use_block_building:
+                    self.config.use_brkga = True
+                    for strategy in ("max", "column", "layer"):
+                        items, specs = self._build_blocks(boxes, strategy=strategy)
+                        if specs:
+                            raw = search(items)
+                            candidates.append(self._expand_blocks(raw, specs))
+            finally:
+                self.config.grasp_alpha = saved_alpha
+                self.config.use_brkga = saved_brkga
+                self._rng = saved_rng
+
+        # Phase 2 features (GRASP-randomized): try each block-building
+        # strategy across all box variants.
         if self.config.use_block_building:
-            for strategy in ("max", "column", "layer"):
-                items, specs = self._build_blocks(boxes, strategy=strategy)
-                if specs:
-                    raw = search(items)
-                    candidates.append(self._expand_blocks(raw, specs))
+            for variant in box_variants:
+                for strategy in ("max", "column", "layer"):
+                    items, specs = self._build_blocks(variant, strategy=strategy)
+                    if specs:
+                        raw = search(items)
+                        candidates.append(self._expand_blocks(raw, specs))
 
-        return min(candidates, key=quality)
+        # Phase 4: MIP polish (CP-SAT). Adds a provably-optimal candidate
+        # when N is small enough. Lazy-imports the solver so installations
+        # without ortools still work. Uses the best heuristic result
+        # achieved so far to (a) set a reasonable pallet-count budget and
+        # (b) warm-start the MIP with the heuristic's placements.
+        #
+        # Skips when the heuristic already achieves the volume LB —
+        # MIP can't improve on that, and running it would waste budget.
+        if self.config.use_mip_polish and len(boxes) <= self.config.mip_n_threshold:
+            try:
+                from mip_polish import mip_polish as _mip_polish
+                # Estimate a sensible P budget from heuristic candidates,
+                # AND get the warm-start hint.
+                if candidates:
+                    best_so_far = min(candidates, key=quality)
+                    P_budget = max(1, best_so_far.num_pallets)
+                    warm = best_so_far
+                else:
+                    P_budget = 1
+                    warm = None
+                # Respect the user's explicit cap when set.
+                if self.config.max_pallets is not None:
+                    P_budget = min(P_budget, self.config.max_pallets)
+                # Compute the volume LB. If the heuristic is already at LB
+                # AND all items are packed, skip MIP — it can't help.
+                pallet_vol = self.pallet.length * self.pallet.width * self.pallet.height
+                total_vol = sum(b.volume for b in boxes)
+                vol_lb = max(1, int(total_vol / pallet_vol + 0.9999))
+                if (warm is not None and not warm.unpacked and
+                        warm.num_pallets <= vol_lb):
+                    pass  # skip — already at LB
+                else:
+                    mip_result = _mip_polish(
+                        boxes, self.pallet, self.config,
+                        time_limit_s=self.config.mip_time_limit_s,
+                        num_workers=self.config.mip_num_workers,
+                        max_pallets=P_budget,
+                        warm_start=warm,
+                    )
+                    if mip_result is not None:
+                        candidates.append(mip_result)
+                    # Also try one fewer pallet — gives MIP a chance to BEAT v1.
+                    if P_budget > 1 and self.config.max_pallets is None:
+                        mip_aggressive = _mip_polish(
+                            boxes, self.pallet, self.config,
+                            time_limit_s=self.config.mip_time_limit_s,
+                            num_workers=self.config.mip_num_workers,
+                            max_pallets=P_budget - 1,
+                            warm_start=warm,
+                        )
+                        if mip_aggressive is not None:
+                            candidates.append(mip_aggressive)
+            except ImportError:
+                pass
+
+        # Phase 2e: layer-building decoder candidates. Tries 3 axes × 2 seed
+        # strategies per box variant — each combination produces a
+        # qualitatively different packing structure.
+        if self.config.use_layer_building:
+            axes = [self.config.layer_axis] if self.config.layer_axis else ["x", "y", "z"]
+            if axes == ["all"]:
+                axes = ["x", "y", "z"]
+            elif len(axes) == 1 and axes[0] not in ("x", "y", "z"):
+                axes = ["x", "y", "z"]
+            for variant in box_variants:
+                for ax in axes:
+                    for strat in ("cross_section", "depth", "min_depth", "sku_volume"):
+                        for fill in ("ep", "maxrects", "sku_grid"):
+                            candidates.append(self._layer_pack(
+                                variant, axis=ax, seed_strategy=strat, fill=fill,
+                            ))
+
+        best = min(candidates, key=quality)
+
+        # Phase 2d: ejection chains. Only fires when (a) opted in and (b)
+        # there ARE unpacked items — the standard Crainic-Perboli-Tadei
+        # formulation.
+        if self.config.use_ejection_chains and best.unpacked:
+            improved = self._ejection_chains(best)
+            if quality(improved) < quality(best):
+                best = improved
+
+        # Q1: multi-pallet leftover consolidation. Fires when (a) opted in
+        # via use_ejection_chains AND (b) the result has 2+ pallets AND
+        # (c) no unpacked items left. Targets the "first-fit waste" case
+        # where greedy packs everything but uses one pallet too many.
+        if (self.config.use_ejection_chains and
+                not best.unpacked and best.num_pallets >= 2):
+            # First: try fast item-by-item displacement.
+            improved = self._consolidate_leftover_pallet(best)
+            if quality(improved) < quality(best):
+                best = improved
+            # Second: try re-packing everything onto N-1 pallets from scratch
+            # with multi_start. Explores fundamentally different orderings.
+            if not best.unpacked and best.num_pallets >= 2:
+                rebuilt = self._consolidate_via_rebuild(best)
+                if rebuilt is not None and quality(rebuilt) < quality(best):
+                    best = rebuilt
+
+        # MIP-based last-pallet polish for large N. Activated when (a) MIP
+        # polish is enabled, (b) the full-problem MIP wasn't run (N too
+        # large), and (c) result still has multiple pallets.
+        if (self.config.use_mip_polish and len(boxes) > self.config.mip_n_threshold
+                and not best.unpacked and best.num_pallets >= 2):
+            polished = self._mip_last_pallet_polish(best)
+            if polished is not None and quality(polished) < quality(best):
+                best = polished
+
+        return best
+
+    # -------- Phase 2d: ejection chains -----------------------------------
+    def _ejection_chains(self, result: PackResult) -> PackResult:
+        """Local-search post-process: try to absorb unpacked items by
+        displacing 1 (or up to `ejection_max_depth`) placed items, then
+        re-placing the displaced items.
+
+        Standard Crainic-Perboli-Tadei 2009 / Faroe-Pisinger-Zachariasen 2003
+        formulation: ONLY fires when there are unpacked items. Multi-pallet
+        rebalancing is Phase 3 territory, not this method.
+
+        Termination: stops when no swap improves quality, or
+        `ejection_max_iters` reached, or wall-clock budget exhausted.
+
+        Doesn't touch the validator — every move calls PalletState.feasible
+        via try_place, so the constraint stack is honored.
+        """
+        if not result.unpacked:
+            return result
+        depth = max(1, self.config.ejection_max_depth)
+        budget = self.config.ejection_max_iters
+        wall_budget_s = 5.0   # hard wall-clock cap so we don't stall
+
+        def quality(res: PackResult) -> Tuple:
+            return (len(res.unpacked), res.num_pallets,
+                    -res.total_volume_utilisation)
+
+        current = result
+        start = time.time()
+        for _ in range(budget):
+            if time.time() - start > wall_budget_s:
+                break
+            improved = self._try_one_ejection_pass(current, depth)
+            if improved is None or quality(improved) >= quality(current):
+                break
+            current = improved
+        return current
+
+    # -------- MIP-based last-pallet polish for large N --------
+    def _mip_last_pallet_polish(self, result: "PackResult") -> Optional["PackResult"]:
+        """For large-N cases where MIP can't solve the full problem,
+        extract a sub-problem from the weakest pallet + top-z items
+        from a neighbor and invoke MIP with the rest of items as
+        fixed obstacles.
+
+        If MIP packs all sub-items on (sub_pallet_count - 1) pallets,
+        we save a pallet. Otherwise no change.
+
+        Returns the improved PackResult, or None.
+        """
+        try:
+            from mip_polish import mip_polish as _mip_polish
+        except ImportError:
+            return None
+        if result.num_pallets < 2 or result.unpacked:
+            return None
+        # Sort pallets by util ascending; weakest first.
+        sorted_pallets = sorted(
+            result.pallets,
+            key=lambda st: sum(p.box.volume for p in st.placements),
+        )
+        weakest = sorted_pallets[0]
+        # Donor candidate = pallet with next-most slack (second-weakest by util).
+        donor = sorted_pallets[1] if len(sorted_pallets) > 1 else None
+        fixed_pallets = sorted_pallets[2:]  # untouched
+
+        # Build the sub-problem: weakest's items + top-z items from donor.
+        sub_boxes: List[Box] = [p.box for p in weakest.placements]
+        # From donor, extract top-K items by z-position (most accessible).
+        donor_pls_sorted = sorted(
+            donor.placements, key=lambda p: -p.z,
+        ) if donor else []
+        # Pick K items from donor such that sub-problem N stays within
+        # MIP's tractable range (~30).
+        budget = max(0, 30 - len(sub_boxes))
+        donor_movable = donor_pls_sorted[:budget]
+        donor_fixed = donor_pls_sorted[budget:] if donor else []
+        for pl in donor_movable:
+            sub_boxes.append(pl.box)
+
+        if len(sub_boxes) == 0:
+            return None
+
+        # Fixed obstacles: untouched pallets' items, plus donor's bottom-z.
+        # Pallet indices: weakest=0 (will be empty post-polish),
+        # donor=1 (gets repacked), then fixed_pallets at 2..
+        obstacles: List[Tuple[int, Placement]] = []
+        # Donor's bottom-z items are obstacles on pallet 1 (the donor).
+        donor_pallet_idx = 1
+        for pl in donor_fixed:
+            obstacles.append((donor_pallet_idx, pl))
+        # Untouched pallets' items are obstacles on pallets 2, 3, ...
+        for fp_idx, st in enumerate(fixed_pallets):
+            mip_pallet_idx = 2 + fp_idx
+            for pl in st.placements:
+                obstacles.append((mip_pallet_idx, pl))
+
+        # Available pallet count for the sub-problem MIP = number of
+        # pallets in the result minus 1 (we're trying to drop the weakest).
+        target_pallets = result.num_pallets - 1
+        if target_pallets < 1:
+            return None
+
+        # Build a "warm-start" for the sub-items based on their existing
+        # positions (when they exist).
+        warm_pallets: List[PalletState] = []
+        # Pallet 0 corresponds to the dropped weakest — skip.
+        # Pallet 1 is the donor.
+        if donor:
+            warm_pallets.append(donor)
+        # Then the fixed_pallets follow.
+        warm_pallets.extend(fixed_pallets)
+        warm = PackResult(pallets=warm_pallets, unpacked=[])
+
+        sub_result = _mip_polish(
+            sub_boxes, self.pallet, self.config,
+            time_limit_s=self.config.mip_time_limit_s,
+            num_workers=self.config.mip_num_workers,
+            max_pallets=target_pallets,
+            warm_start=warm,
+            fixed_obstacles=obstacles,
+        )
+        if sub_result is None or sub_result.unpacked:
+            return None
+
+        # Splice: build the final PackResult.
+        # The MIP returned a packing of sub_boxes on `target_pallets`
+        # pallets. Combine these with the fixed_obstacles' "implicit"
+        # pallets.
+        # Build pallet groupings.
+        new_pallets: List[PalletState] = []
+        # First: the MIP-packed sub-pallets get re-built with the
+        # fixed obstacles added back in.
+        for mip_p_idx, mip_st in enumerate(sub_result.pallets):
+            new_st = PalletState(self.pallet, f"P{mip_p_idx+1:03d}",
+                                 self.config, rng=self._rng)
+            new_st.placements = list(mip_st.placements)
+            # Add back obstacles assigned to this same MIP pallet idx.
+            for obs_p_idx, obs_pl in obstacles:
+                if obs_p_idx == mip_p_idx:
+                    new_st.placements.append(obs_pl)
+            new_st.total_weight = sum(p.box.weight for p in new_st.placements)
+            new_pallets.append(new_st)
+
+        return PackResult(pallets=new_pallets, unpacked=list(result.unpacked))
+
+    # -------- Q1: rebuild with N-1 pallet cap (most-likely-to-succeed) ---
+    def _consolidate_via_rebuild(
+        self, result: PackResult,
+    ) -> Optional[PackResult]:
+        """Try to fit everything onto N-1 pallets by re-packing from
+        scratch with `max_pallets` constrained. Explores a broader range
+        of orderings than the post-hoc ejection approach.
+
+        Returns the rebuilt PackResult if it strictly improves, else None.
+        """
+        if result.num_pallets < 2:
+            return None
+        all_boxes: List[Box] = []
+        for st in result.pallets:
+            for p in st.placements:
+                all_boxes.append(p.box)
+        if result.unpacked:
+            all_boxes.extend(result.unpacked)
+        target_count = result.num_pallets - 1
+
+        def quality(res: PackResult) -> Tuple:
+            return (len(res.unpacked), res.num_pallets,
+                    -res.total_volume_utilisation)
+
+        # Snapshot config for restore.
+        saved = (
+            self.config.max_pallets,
+            self.config.use_safety_net,
+            self.config.use_ejection_chains,
+            self.config.use_mip_polish,
+        )
+        self.config.max_pallets = target_count
+        # Disable nested ejection/MIP/safety to avoid recursion and stalls.
+        self.config.use_safety_net = False
+        self.config.use_ejection_chains = False
+        self.config.use_mip_polish = False
+        saved_rng = self._rng
+        self._rng = random.Random(self.config.seed)
+        try:
+            # Try several diverse orderings via multi_start.
+            repacked = self._multi_start(all_boxes)
+        finally:
+            (self.config.max_pallets,
+             self.config.use_safety_net,
+             self.config.use_ejection_chains,
+             self.config.use_mip_polish) = saved
+            self._rng = saved_rng
+        if quality(repacked) < quality(result):
+            return repacked
+        return None
+
+    # -------- Q1: multi-pallet ejection (consolidate leftover pallet) ----
+    def _consolidate_leftover_pallet(self, result: PackResult) -> PackResult:
+        """Try to drop the lowest-utilized pallet by relocating its items
+        onto the other pallets.
+
+        This addresses the classical "first-fit waste" failure mode in
+        bin-packing: greedy outer loops commit items permanently to a
+        pallet, and the last (typically least-utilized) pallet ends up
+        as a sparse leftover. The standard fix in the literature is
+        ejection chains operating across pallets, not just on unpacked
+        items.
+
+        Algorithm:
+          1. If there's only 1 pallet, nothing to consolidate. Skip.
+          2. Find the lowest-volume pallet (the "victim").
+          3. Build a fresh candidate from the OTHER pallets (preserving
+             their layouts) and try to relocate each victim item onto
+             them.
+          4. For each victim item:
+               a. Try direct placement on the most-utilized fitting pallet.
+               b. If that fails, try depth-1 ejection: remove ONE item
+                  from a candidate pallet, place the victim item, place
+                  the displaced item somewhere else.
+          5. If ALL victim items relocate successfully, the victim
+             pallet is now empty — we've saved one pallet. Otherwise,
+             revert to the original.
+
+        Bounded by config.ejection_max_iters (outer attempts) and
+        a 5-second wall-clock budget.
+        """
+        if len(result.pallets) < 2:
+            return result
+        if result.unpacked:
+            # Unpacked items take precedence — handled by _ejection_chains.
+            return result
+        budget = self.config.ejection_max_iters
+        wall_budget_s = 5.0
+
+        def quality(res: PackResult) -> Tuple:
+            return (len(res.unpacked), res.num_pallets,
+                    -res.total_volume_utilisation)
+
+        current = result
+        start = time.time()
+        for _ in range(budget):
+            if time.time() - start > wall_budget_s:
+                break
+            improved = self._try_one_leftover_consolidation(current)
+            if improved is None or quality(improved) >= quality(current):
+                break
+            current = improved
+        return current
+
+    def _try_one_leftover_consolidation(
+        self, result: PackResult
+    ) -> Optional[PackResult]:
+        """One pass: pick the lowest-util pallet and try to redistribute
+        its items onto the others. Returns the improved PackResult or
+        None on no improvement.
+        """
+        if len(result.pallets) < 2:
+            return None
+
+        # Sort pallets by used volume ascending — the first is the victim.
+        sorted_pallets = sorted(
+            result.pallets,
+            key=lambda st: sum(p.box.volume for p in st.placements),
+        )
+        victim = sorted_pallets[0]
+        others = sorted_pallets[1:]
+        victim_items = [pl.box for pl in victim.placements]
+        if not victim_items:
+            # Already empty — just drop it.
+            return PackResult(pallets=list(others), unpacked=result.unpacked)
+
+        # Build fresh candidate pallets from `others`, preserving layouts.
+        candidate_pallets: List[PalletState] = []
+        for st in others:
+            new_st = PalletState(self.pallet, st.pallet_id, self.config,
+                                 rng=self._rng)
+            for p in st.placements:
+                new_st.placements.append(p)
+                new_st.total_weight += p.box.weight
+                new_st._top_load.setdefault(id(p), 0.0)
+            new_st.extreme_points = self._regen_extreme_points(new_st)
+            new_st._top_load = self._regen_top_load(new_st)
+            candidate_pallets.append(new_st)
+
+        # Sort victim items by volume descending — the biggest are hardest
+        # to relocate; try them first to fail fast.
+        victim_items_sorted = sorted(victim_items, key=lambda b: -b.volume)
+
+        unplaceable: List[Box] = []
+        for item in victim_items_sorted:
+            placed = False
+            # Try direct placement on candidate pallets, sorted by
+            # current fullness descending (best_fit-style).
+            ordered = sorted(
+                candidate_pallets,
+                key=lambda st: -sum(p.box.volume for p in st.placements),
+            )
+            for st in ordered:
+                if st.try_place(item, strategy="blb"):
+                    placed = True
+                    break
+            if placed:
+                continue
+            # Direct placement failed. Try depth-1 ejection: remove ONE
+            # item from a candidate pallet, place `item`, then try to
+            # place the displaced item somewhere.
+            placed_via_ejection = False
+            for target_pallet in ordered:
+                if placed_via_ejection:
+                    break
+                # Try removing each item from target_pallet and see if `item`
+                # can replace it. Order placement-removal candidates by
+                # smallest volume first (least disruptive to displace).
+                candidates_to_remove = sorted(
+                    target_pallet.placements, key=lambda p: p.box.volume,
+                )
+                for to_remove in candidates_to_remove:
+                    # Build a hypothetical state of target_pallet without `to_remove`.
+                    hypo = PalletState(self.pallet, target_pallet.pallet_id,
+                                       self.config, rng=self._rng)
+                    for p in target_pallet.placements:
+                        if id(p) == id(to_remove):
+                            continue
+                        hypo.placements.append(p)
+                        hypo.total_weight += p.box.weight
+                    hypo.extreme_points = self._regen_extreme_points(hypo)
+                    hypo._top_load = self._regen_top_load(hypo)
+                    if not hypo.try_place(item, strategy="blb"):
+                        continue
+                    # `item` fits. Now we need to re-place `to_remove`
+                    # on some OTHER candidate pallet (or back on `hypo`'s
+                    # newly-modified state — but it was just removed
+                    # because it didn't fit alongside `item`).
+                    displaced_placed = False
+                    for st2 in candidate_pallets:
+                        if id(st2) == id(target_pallet):
+                            continue
+                        if st2.try_place(to_remove.box, strategy="blb"):
+                            displaced_placed = True
+                            break
+                    if displaced_placed:
+                        # Commit: replace target_pallet's contents with hypo.
+                        target_pallet.placements = list(hypo.placements)
+                        target_pallet.total_weight = hypo.total_weight
+                        target_pallet.extreme_points = hypo.extreme_points
+                        target_pallet._top_load = hypo._top_load
+                        placed_via_ejection = True
+                        break
+                    # else: revert (no state changes were made yet).
+            if not placed_via_ejection:
+                unplaceable.append(item)
+
+        if unplaceable:
+            # Even with ejections we couldn't relocate everything.
+            # Don't commit a partial result — return None.
+            return None
+
+        # Success — every victim item relocated. The victim pallet is
+        # now empty; drop it.
+        return PackResult(pallets=candidate_pallets, unpacked=list(result.unpacked))
+
+    def _try_one_ejection_pass(
+        self, result: PackResult, depth: int
+    ) -> Optional[PackResult]:
+        """One pass: for each unpacked item, try to fit it by displacing
+        one (or up to `depth`) placed items. Returns the improved result,
+        or None if nothing improved.
+        """
+        if not result.unpacked:
+            return None
+        all_placements: List[Tuple[int, Placement]] = []
+        for pid, st in enumerate(result.pallets):
+            for p in st.placements:
+                all_placements.append((pid, p))
+
+        def quality(res: PackResult) -> Tuple:
+            return (len(res.unpacked), res.num_pallets,
+                    -res.total_volume_utilisation)
+
+        baseline_q = quality(result)
+
+        for target in list(result.unpacked):
+            for pid, placed in reversed(all_placements):
+                if placed.box.id == target.id:
+                    continue
+                candidate_result = self._rebuild_after_swap(
+                    result, [(pid, placed)], [target, placed.box]
+                )
+                if candidate_result is None:
+                    continue
+                if quality(candidate_result) < baseline_q:
+                    return candidate_result
+                if depth >= 2:
+                    # Depth-2: try removing one more item from the same pallet.
+                    for pid2, placed2 in reversed(all_placements):
+                        if pid2 != pid:
+                            break
+                        if placed2.box.id in (placed.box.id, target.id):
+                            continue
+                        candidate2 = self._rebuild_after_swap(
+                            result, [(pid, placed), (pid2, placed2)],
+                            [target, placed.box, placed2.box],
+                        )
+                        if candidate2 is None:
+                            continue
+                        if quality(candidate2) < baseline_q:
+                            return candidate2
+        return None
+
+    def _rebuild_after_swap(
+        self,
+        result: PackResult,
+        remove: List[Tuple[int, Placement]],
+        insert: List[Box],
+    ) -> Optional[PackResult]:
+        """Build a fresh PackResult that excludes `remove` and tries to insert
+        the `insert` boxes (which include both new candidates and the removed
+        items, in some order).
+
+        Returns None on any infeasibility OR if pallet count would grow
+        (we only accept ejection moves that don't increase pallet count).
+        """
+        # Build the set of placements that survive.
+        removed_ids = {(pid, id(pl)) for pid, pl in remove}
+        # Reconstruct fresh PalletStates with the surviving placements.
+        new_pallets: List[PalletState] = []
+        for pid, st in enumerate(result.pallets):
+            new_st = PalletState(self.pallet, st.pallet_id, self.config,
+                                 rng=self._rng)
+            for p in st.placements:
+                if (pid, id(p)) in removed_ids:
+                    continue
+                # Re-commit by calling _commit (preserves EPs and load cache).
+                # The placement is known to be feasible since it was already
+                # there; skip feasibility check for speed.
+                new_st.placements.append(p)
+                new_st.total_weight += p.box.weight
+                new_st._top_load.setdefault(id(p), 0.0)
+            # Rebuild EPs from scratch for the surviving placements.
+            new_st.extreme_points = self._regen_extreme_points(new_st)
+            # Rebuild _top_load from scratch for correctness after removal.
+            new_st._top_load = self._regen_top_load(new_st)
+            new_pallets.append(new_st)
+
+        # Drop any pallet that's now empty.
+        new_pallets = [st for st in new_pallets if st.placements]
+
+        # Try to place each `insert` box in some pallet without opening
+        # a new one. Order them largest-volume-first for stability.
+        to_place = sorted(insert, key=lambda b: -b.volume)
+        residual_unpacked: List[Box] = []
+
+        for box in to_place:
+            placed = False
+            # best_fit-style: try the most-full pallet first.
+            ordered_pallets = sorted(
+                new_pallets,
+                key=lambda st: -sum(p.box.volume for p in st.placements),
+            )
+            for st in ordered_pallets:
+                if st.try_place(box, strategy="blb"):
+                    placed = True
+                    break
+            if not placed:
+                residual_unpacked.append(box)
+
+        # Merge with the unpacked items that weren't part of `insert`.
+        all_unpacked = list(residual_unpacked)
+        original_inserted_ids = {b.id for b in insert}
+        for u in result.unpacked:
+            if u.id not in original_inserted_ids:
+                all_unpacked.append(u)
+
+        # Reject moves that would open a new pallet (pallet count grew).
+        if len(new_pallets) > len(result.pallets):
+            return None
+
+        return PackResult(pallets=new_pallets, unpacked=all_unpacked)
+
+    def _regen_extreme_points(self, st: "PalletState") -> List[Tuple[float, float, float]]:
+        """Rebuild EP set from scratch for a state's current placements.
+
+        Conservative reconstruction: floor origin + each placement's three
+        "open" corners, gravity-projected onto whatever they land on.
+        """
+        eps: List[Tuple[float, float, float]] = [(0.0, 0.0, 0.0)]
+        for p in st.placements:
+            for corner in [
+                (p.x2, p.y, p.z),
+                (p.x, p.y2, p.z),
+                (p.x, p.y, p.z2),
+            ]:
+                projected = st._gravity_project(corner)
+                if projected not in eps:
+                    eps.append(projected)
+        # Prune EPs that sit inside any placed box.
+        eps = [ep for ep in eps if not st._point_inside_any_placement(ep)]
+        return eps
+
+    # -------- Phase 2e: 2D MaxRects (Jylanki 2010) ------------------------
+    @staticmethod
+    def _maxrects_prune(rects: List[Tuple[float, float, float, float]]) -> List[Tuple[float, float, float, float]]:
+        """Remove free rectangles that are strictly contained in another.
+
+        MaxRects's correctness relies on keeping only *maximal* free rects.
+        Without pruning, the algorithm produces invalid placements (free
+        rects with overlapping items inside).
+        """
+        result: List[Tuple[float, float, float, float]] = []
+        for i, r in enumerate(rects):
+            if r[2] <= 1e-9 or r[3] <= 1e-9:
+                continue
+            dominated = False
+            for j, s in enumerate(rects):
+                if i == j:
+                    continue
+                if (s[0] <= r[0] + 1e-9 and s[1] <= r[1] + 1e-9 and
+                        s[0] + s[2] >= r[0] + r[2] - 1e-9 and
+                        s[1] + s[3] >= r[1] + r[3] - 1e-9 and
+                        (s[0] < r[0] - 1e-9 or s[1] < r[1] - 1e-9 or
+                         s[0] + s[2] > r[0] + r[2] + 1e-9 or
+                         s[1] + s[3] > r[1] + r[3] + 1e-9)):
+                    dominated = True
+                    break
+            if not dominated:
+                result.append(r)
+        return result
+
+    @staticmethod
+    def _maxrects_split(
+        free: List[Tuple[float, float, float, float]],
+        px: float, py: float, pw: float, ph: float,
+    ) -> List[Tuple[float, float, float, float]]:
+        """Split free rectangles affected by a (px,py,pw,ph) placement.
+
+        For each free rect that intersects the placement, replace it with up
+        to 4 maximal sub-rects (left/right/below/above). Non-intersecting
+        rects pass through unchanged. Result is then pruned of dominated
+        rects by the caller.
+        """
+        new_free: List[Tuple[float, float, float, float]] = []
+        for fx, fy, fw, fh in free:
+            # No intersection.
+            if (px + pw <= fx + 1e-9 or px >= fx + fw - 1e-9 or
+                    py + ph <= fy + 1e-9 or py >= fy + fh - 1e-9):
+                new_free.append((fx, fy, fw, fh))
+                continue
+            # Left of placement.
+            if px > fx + 1e-9:
+                new_free.append((fx, fy, px - fx, fh))
+            # Right of placement.
+            if px + pw < fx + fw - 1e-9:
+                new_free.append((px + pw, fy, (fx + fw) - (px + pw), fh))
+            # Below placement.
+            if py > fy + 1e-9:
+                new_free.append((fx, fy, fw, py - fy))
+            # Above placement.
+            if py + ph < fy + fh - 1e-9:
+                new_free.append((fx, py + ph, fw, (fy + fh) - (py + ph)))
+        return new_free
+
+    def _fill_layer_sku_grid(
+        self,
+        remaining: List[Box],
+        axis: str,
+        layer_depth: float,
+        layer_offset: float,
+        face_w: float,
+        face_h: float,
+        global_placements: List[Placement],
+    ) -> set:
+        """SKU-grid pattern fill (Bischoff-Ratcliff 1995).
+
+        Each layer is dominated by ONE SKU placed in a regular n_x × n_y
+        grid where every grid item extends the FULL slab depth — no
+        "depth shadows" wasted behind shorter items. The leftover
+        L-shaped area is filled with secondary SKUs via 2D MaxRects.
+
+        This is the actual algorithm that gets 83% on BR1, distinct from
+        the generic 2D MaxRects fill (which packs items at the back of
+        the slab with arbitrary depth, wasting volume behind shorter
+        items).
+
+        Algorithm:
+          1. Group remaining items by SKU. For each SKU, find rotations
+             where the SKU's depth-axis dim equals (or is within ε of)
+             `layer_depth`. These rotations give "no-shadow" grid candidates.
+          2. Among SKUs that have at least one no-shadow rotation, pick
+             the one with the most total volume.
+          3. Choose that SKU's rotation that gives the highest n_x*n_y
+             grid count on the slab face.
+          4. Place up to min(n_x*n_y, N_sku) copies in a regular grid.
+          5. Build initial free-rect set = L-shaped leftover.
+          6. Run 2D MaxRects on the leftover face area with the remaining
+             items (any rotation valid, since they pack against the back
+             wall).
+
+        Returns the set of box IDs placed. Appends Placements to
+        `global_placements` in REAL pallet coordinates.
+
+        Falls back to returning empty set (caller's responsibility to
+        handle) if no SKU offers a no-shadow grid candidate.
+        """
+        # axis_dims/to_global helpers — re-derive here for self-containment.
+        def axis_dims(b: Box, rot: Rotation) -> Tuple[float, float, float]:
+            dx, dy, dz = b.dims_for(rot)
+            if axis == "x":
+                return dx, dy, dz
+            if axis == "y":
+                return dy, dx, dz
+            return dz, dx, dy
+
+        def to_global(rot: Rotation, fx: float, fy: float) -> Tuple[float, float, float]:
+            if axis == "x":
+                return layer_offset, fx, fy
+            if axis == "y":
+                return fx, layer_offset, fy
+            return fx, fy, layer_offset
+
+        # Group items by SKU key.
+        sku_buckets: Dict[tuple, Dict[str, list]] = {}
+        for idx, b in enumerate(remaining):
+            no_shadow_rots: List[Tuple[Rotation, float, float, float]] = []
+            for rot in b.allowed_rotations:
+                d, fw, fh = axis_dims(b, rot)
+                # No-shadow ⟺ depth-dim equals slab depth.
+                if abs(d - layer_depth) > 1e-6:
+                    continue
+                if fw > face_w + 1e-9 or fh > face_h + 1e-9:
+                    continue
+                no_shadow_rots.append((rot, d, fw, fh))
+            if not no_shadow_rots:
+                continue
+            k = (b.length, b.width, b.height, b.weight,
+                 tuple(sorted(r.name for r in b.allowed_rotations)))
+            bucket = sku_buckets.setdefault(k, {"items": [], "rots": no_shadow_rots})
+            bucket["items"].append((idx, b))
+
+        if not sku_buckets:
+            return set()
+
+        # Pick the dominant SKU (most remaining volume).
+        dom_key = max(
+            sku_buckets.keys(),
+            key=lambda k: sum(it[1].volume for it in sku_buckets[k]["items"]),
+        )
+        dom = sku_buckets[dom_key]
+
+        # Pick best rotation: maximize grid count on slab face.
+        best_rot = None
+        best_score = (-1, 0.0)
+        for rot, d, fw, fh in dom["rots"]:
+            nx = int(face_w // fw)
+            ny = int(face_h // fh)
+            grid = nx * ny
+            if grid == 0:
+                continue
+            slack = (face_w - nx * fw) + (face_h - ny * fh)
+            score = (grid, -slack)
+            if score > best_score:
+                best_score = score
+                best_rot = (rot, fw, fh, nx, ny)
+        if best_rot is None:
+            return set()
+        rot, fw, fh, nx, ny = best_rot
+        available_items = list(dom["items"])
+        units_to_place = min(nx * ny, len(available_items))
+
+        placed_ids: set = set()
+        # Place grid items in row-major order.
+        idx_in_bucket = 0
+        for j in range(ny):
+            for i in range(nx):
+                if idx_in_bucket >= units_to_place:
+                    break
+                _bidx, item = available_items[idx_in_bucket]
+                fx = i * fw
+                fy = j * fh
+                gx, gy, gz = to_global(rot, fx, fy)
+                global_placements.append(Placement(
+                    box=item, rotation=rot, x=gx, y=gy, z=gz,
+                ))
+                placed_ids.add(item.id)
+                idx_in_bucket += 1
+
+        # Build initial free-rect set = L-shaped leftover.
+        grid_w = nx * fw
+        grid_h = ny * fh
+        free_rects: List[Tuple[float, float, float, float]] = []
+        if face_w > grid_w + 1e-9:
+            free_rects.append((grid_w, 0.0, face_w - grid_w, face_h))
+        if face_h > grid_h + 1e-9:
+            free_rects.append((0.0, grid_h, grid_w, face_h - grid_h))
+        if not free_rects:
+            return placed_ids
+
+        # Fill leftover via 2D MaxRects with remaining items.
+        items_to_fill: List[Tuple[Box, List[Tuple[float, float, Rotation, float]]]] = []
+        for b in remaining:
+            if b.id in placed_ids:
+                continue
+            opts: List[Tuple[float, float, Rotation, float]] = []
+            for r in b.allowed_rotations:
+                d, w, h = axis_dims(b, r)
+                if d > layer_depth + 1e-9:
+                    continue
+                opts.append((w, h, r, d))
+            if opts:
+                items_to_fill.append((b, opts))
+        items_to_fill.sort(key=lambda t: -max(w * h for w, h, _, _ in t[1]))
+
+        for b, opts in items_to_fill:
+            best_choice = None
+            best_score_2d: Optional[Tuple[float, float]] = None
+            for w, h, r, _d in opts:
+                for fx, fy, rw, rh in free_rects:
+                    if w <= rw + 1e-9 and h <= rh + 1e-9:
+                        leftover_w = rw - w
+                        leftover_h = rh - h
+                        score = (rw * rh - w * h, min(leftover_w, leftover_h))
+                        if best_score_2d is None or score < best_score_2d:
+                            best_score_2d = score
+                            best_choice = (fx, fy, w, h, r)
+            if best_choice is None:
+                continue
+            fx, fy, pw, ph, r = best_choice
+            gx, gy, gz = to_global(r, fx, fy)
+            global_placements.append(Placement(box=b, rotation=r,
+                                               x=gx, y=gy, z=gz))
+            placed_ids.add(b.id)
+            free_rects = self._maxrects_split(free_rects, fx, fy, pw, ph)
+            free_rects = self._maxrects_prune(free_rects)
+
+        return placed_ids
+
+    def _fill_layer_maxrects(
+        self,
+        remaining: List[Box],
+        axis: str,
+        layer_depth: float,
+        layer_offset: float,
+        face_w: float,
+        face_h: float,
+        global_placements: List[Placement],
+        seed_idx: int,
+        seed_rot: Rotation,
+    ) -> set:
+        """2D MaxRects layer-fill (Jylanki 2010).
+
+        Each item is reduced to its (depth, fw, fh) given the layering
+        axis; an item is eligible if `depth <= layer_depth` and its
+        cross-section (fw, fh) fits the slab face (face_w, face_h).
+
+        For each eligible item we enumerate its (rotation, fw, fh, depth)
+        options (multiple 3D rotations may give different 2D footprints),
+        find the best-area-fit placement in the current free-rectangle
+        set, and split affected rects per Jylanki's algorithm.
+
+        Returns the set of box IDs that got placed; placements are appended
+        to `global_placements` in real pallet coordinates.
+        """
+        L = self.pallet.length
+        W = self.pallet.width
+        H = self.pallet.height
+
+        # Per-item face/depth options under each allowed rotation.
+        def axis_dims(b: Box, rot: Rotation) -> Tuple[float, float, float]:
+            dx, dy, dz = b.dims_for(rot)
+            if axis == "x":
+                return dx, dy, dz
+            if axis == "y":
+                return dy, dx, dz
+            return dz, dx, dy
+
+        def to_global(rot: Rotation, fx: float, fy: float) -> Tuple[float, float, float]:
+            if axis == "x":
+                return layer_offset, fx, fy
+            if axis == "y":
+                return fx, layer_offset, fy
+            return fx, fy, layer_offset
+
+        # Build option list per item.
+        items_options: List[Tuple[int, Box, List[Tuple[float, float, Rotation, float]]]] = []
+        for idx, b in enumerate(remaining):
+            opts: List[Tuple[float, float, Rotation, float]] = []
+            for rot in b.allowed_rotations:
+                d, fw, fh = axis_dims(b, rot)
+                if d > layer_depth + 1e-9:
+                    continue
+                if fw > face_w + 1e-9 or fh > face_h + 1e-9:
+                    continue
+                opts.append((fw, fh, rot, d))
+            if opts:
+                items_options.append((idx, b, opts))
+
+        if not items_options:
+            return set()
+
+        # Place the seed first at (0, 0) to anchor the layer.
+        free_rects: List[Tuple[float, float, float, float]] = [(0.0, 0.0, face_w, face_h)]
+        placed_ids: set = set()
+        seed_box = remaining[seed_idx]
+        _depth, seed_fw, seed_fh = axis_dims(seed_box, seed_rot)
+        # Sanity: seed's depth was already verified by caller.
+        if seed_fw > face_w + 1e-9 or seed_fh > face_h + 1e-9:
+            return set()
+        gx, gy, gz = to_global(seed_rot, 0.0, 0.0)
+        global_placements.append(Placement(box=seed_box, rotation=seed_rot,
+                                           x=gx, y=gy, z=gz))
+        placed_ids.add(seed_box.id)
+        free_rects = self._maxrects_split(free_rects, 0.0, 0.0, seed_fw, seed_fh)
+        free_rects = self._maxrects_prune(free_rects)
+
+        # Sort remaining items by largest-area-option descending.
+        items_options.sort(key=lambda t: -max(fw * fh for fw, fh, _, _ in t[2]))
+
+        for idx, b, opts in items_options:
+            if b.id in placed_ids:
+                continue
+            # Try every (rotation, free_rect, orientation) combo.
+            best_score: Optional[Tuple[float, float]] = None
+            best_choice = None  # (rx, ry, fw, fh, rot)
+            for fw, fh, rot, _d in opts:
+                for fx, fy, fw_avail, fh_avail in free_rects:
+                    if fw <= fw_avail + 1e-9 and fh <= fh_avail + 1e-9:
+                        # Best Area Fit + Best Short Side Fit tie-break.
+                        leftover_w = fw_avail - fw
+                        leftover_h = fh_avail - fh
+                        score = (fw_avail * fh_avail - fw * fh,
+                                 min(leftover_w, leftover_h))
+                        if best_score is None or score < best_score:
+                            best_score = score
+                            best_choice = (fx, fy, fw, fh, rot)
+            if best_choice is None:
+                continue
+            rx, ry, pw, ph, rot = best_choice
+            gx, gy, gz = to_global(rot, rx, ry)
+            global_placements.append(Placement(box=b, rotation=rot,
+                                               x=gx, y=gy, z=gz))
+            placed_ids.add(b.id)
+            free_rects = self._maxrects_split(free_rects, rx, ry, pw, ph)
+            free_rects = self._maxrects_prune(free_rects)
+
+        return placed_ids
+
+    # -------- Phase 2e: layer-building decoder ----------------------------
+    def _layer_pack(self, boxes: List[Box], axis: str = "x",
+                    seed_strategy: str = "cross_section",
+                    fill: str = "ep") -> PackResult:
+        """Layer-building decoder (George-Robinson 1980, Bischoff-Ratcliff 1995).
+
+        Builds slab-shaped sub-problems along one pallet axis. Each slab's
+        depth is set by a seed item; the slab is filled with smaller items
+        via the extreme-point engine on a virtual sub-pallet whose
+        dimensions match the slab.
+
+        Three axis orientations:
+          axis='z' — HORIZONTAL layers (Bischoff-Ratcliff 1995 layer-building).
+                     Each layer is at a different height. Best when items
+                     share a height (F13).
+          axis='x' — WALL-building along pallet length (George-Robinson 1980).
+                     Each wall extends full pallet height + width. Best
+                     when cargo is heterogeneous and the container is
+                     elongated (BR sets).
+          axis='y' — same as 'x' but along pallet width.
+
+        Seed-selection strategies (which item starts the next slab):
+          'cross_section' — largest dy*dz (or analogous) cross-section.
+                            Fills the slab densely with similar items.
+          'depth'         — largest depth-dim. Thickest slab. Useful when
+                            we want each slab to span more cargo at once.
+          'volume'        — largest total volume. Standard "place big first."
+
+        Currently a single-pallet decoder. Items that don't fit go to
+        `.unpacked`. The multi-pallet outer loop in `pack()` will accept
+        these and fall back to extreme-point candidates.
+        """
+        if not boxes:
+            return PackResult(pallets=[], unpacked=[])
+
+        pallet = self.pallet
+        L, W, H = pallet.length, pallet.width, pallet.height
+        axis = axis.lower()
+        if axis not in ("x", "y", "z"):
+            axis = "x"
+
+        sub_cfg = PackerConfig(
+            support_ratio=self.config.support_ratio,
+            require_centroid_supported=self.config.require_centroid_supported,
+            allow_pallet_overhang=False,
+            heavy_on_bottom=False,
+            cog_envelope_fraction=1.0,
+            cog_check_min_load_fraction=1.0,
+            enforce_load_bearing=False,
+            multi_start_trials=1,
+            seed=self.config.seed,
+            grasp_alpha=self.config.grasp_alpha,
+            use_safety_net=False,
+            max_pallets=None,
+        )
+
+        # Each rotation produces dims = (dx, dy, dz). Pull out the dim along
+        # the layering axis and the two cross-section dims.
+        def axis_and_cross(b: Box, rot: Rotation) -> Tuple[float, float, float]:
+            dx, dy, dz = b.dims_for(rot)
+            if axis == "x":
+                return dx, dy, dz       # depth, ca (=W's axis), cb (=H's axis)
+            if axis == "y":
+                return dy, dx, dz
+            return dz, dx, dy            # axis == 'z'
+
+        # Virtual pallet for a slab of given depth along the chosen axis.
+        def virtual_pallet(depth: float) -> Pallet:
+            if axis == "x":
+                return Pallet(length=depth, width=W, height=H,
+                              max_weight=float("inf"))
+            if axis == "y":
+                return Pallet(length=L, width=depth, height=H,
+                              max_weight=float("inf"))
+            return Pallet(length=L, width=W, height=depth,
+                          max_weight=float("inf"))
+
+        # Translate a sub-placement (relative to slab origin) into the
+        # global pallet coordinates.
+        def to_real(sp: Placement, offset: float) -> Placement:
+            if axis == "x":
+                return Placement(box=sp.box, rotation=sp.rotation,
+                                 x=offset + sp.x, y=sp.y, z=sp.z)
+            if axis == "y":
+                return Placement(box=sp.box, rotation=sp.rotation,
+                                 x=sp.x, y=offset + sp.y, z=sp.z)
+            return Placement(box=sp.box, rotation=sp.rotation,
+                             x=sp.x, y=sp.y, z=offset + sp.z)
+
+        axis_total = L if axis == "x" else (W if axis == "y" else H)
+        cross_a_total = W if axis == "x" else (L if axis == "y" else L)
+        cross_b_total = H if axis == "x" else (H if axis == "y" else W)
+
+        remaining = list(boxes)
+        global_placements: List[Placement] = []
+        layer_offset = 0.0
+
+        while remaining and layer_offset < axis_total - 1e-6:
+            rem_axis = axis_total - layer_offset
+
+            # Build per-SKU volume table once per layer (cheap; constant).
+            sku_vol: Dict[tuple, float] = {}
+            if seed_strategy == "sku_volume":
+                for b in remaining:
+                    k = (b.length, b.width, b.height, b.weight,
+                         tuple(sorted(r.name for r in b.allowed_rotations)))
+                    sku_vol[k] = sku_vol.get(k, 0.0) + b.volume
+
+            # Pick the best seed.
+            best: Optional[Tuple[tuple, int, Rotation, Tuple[float, float, float]]] = None
+            for i, b in enumerate(remaining):
+                for rot in b.allowed_rotations:
+                    d, ca, cb = axis_and_cross(b, rot)
+                    if d > rem_axis + 1e-9:
+                        continue
+                    if ca > cross_a_total + 1e-9 or cb > cross_b_total + 1e-9:
+                        continue
+                    if seed_strategy == "cross_section":
+                        # Thick layer with large cross-section seed.
+                        score = (ca * cb, b.volume, d)
+                    elif seed_strategy == "depth":
+                        # Pick maximum-depth seed → thickest layers.
+                        score = (d, ca * cb, b.volume)
+                    elif seed_strategy == "min_depth":
+                        # Pick minimum-depth seed → thinnest layers (more of
+                        # them; matches BR-1995 layer-building style).
+                        score = (-d, ca * cb, b.volume)
+                    elif seed_strategy == "sku_volume":
+                        # Bischoff-Ratcliff 1995 style: pick the SKU with
+                        # most remaining volume, then the rotation that
+                        # gives the smallest depth-dim for thinner layers.
+                        k = (b.length, b.width, b.height, b.weight,
+                             tuple(sorted(r.name for r in b.allowed_rotations)))
+                        score = (sku_vol[k], -d, ca * cb)
+                    else:  # 'volume'
+                        score = (b.volume, ca * cb, d)
+                    if best is None or score > best[0]:
+                        best = (score, i, rot, (d, ca, cb))
+            if best is None:
+                break
+
+            _score, seed_idx, seed_rot, (sd, _ca, _cb) = best
+            layer_depth = sd
+
+            if fill == "maxrects":
+                # 2D MaxRects on the slab face. Items lie flat at the back
+                # of the slab; their depth-axis dim must be ≤ layer_depth.
+                placed_ids = self._fill_layer_maxrects(
+                    remaining, axis, layer_depth, layer_offset,
+                    cross_a_total, cross_b_total, global_placements,
+                    seed_idx=seed_idx, seed_rot=seed_rot,
+                )
+                if not placed_ids:
+                    remaining.pop(seed_idx)
+                    continue
+                remaining = [b for b in remaining if b.id not in placed_ids]
+            elif fill == "sku_grid":
+                # Q4: SKU-grid pattern fill (BR-1995). Depth-matched
+                # rotation guarantees no depth shadows in the grid;
+                # leftover L-shape filled by 2D MaxRects.
+                placed_ids = self._fill_layer_sku_grid(
+                    remaining, axis, layer_depth, layer_offset,
+                    cross_a_total, cross_b_total, global_placements,
+                )
+                if not placed_ids:
+                    # No SKU offered a no-shadow grid candidate at this
+                    # slab depth. Skip this layer and let the next slab
+                    # try a different depth.
+                    remaining.pop(seed_idx)
+                    continue
+                remaining = [b for b in remaining if b.id not in placed_ids]
+            else:
+                # Extreme-point sub-fill (original).
+                sub_pallet = virtual_pallet(layer_depth)
+                sub_state = PalletState(sub_pallet, f"LAYER_{layer_offset:.0f}",
+                                        sub_cfg, rng=self._rng)
+                seed_box = remaining[seed_idx]
+                placed_seed = sub_state.try_place(seed_box, strategy="blb")
+                if not placed_seed:
+                    remaining.pop(seed_idx)
+                    continue
+                candidates = list(remaining)
+                candidates.pop(seed_idx)
+                candidates.sort(key=lambda b: -b.volume)
+                placed_ids = {seed_box.id}
+                for c in candidates:
+                    if sub_state.try_place(c, strategy="blb"):
+                        placed_ids.add(c.id)
+                for sp in sub_state.placements:
+                    global_placements.append(to_real(sp, layer_offset))
+                remaining = [b for b in remaining if b.id not in placed_ids]
+            layer_offset += layer_depth
+
+        if not global_placements:
+            return PackResult(pallets=[], unpacked=remaining)
+
+        # Replay-validate: layer-building uses a virtual sub-pallet whose
+        # "floor" is the slab origin. For axis='z' (horizontal layers), the
+        # slab's floor at layer_offset > 0 is NOT the real pallet floor —
+        # items placed there must rest on items from the layer below. The
+        # sub-pack didn't know that. We re-build the result against the
+        # real PalletState in bottom-up order and demote any placement that
+        # fails the full constraint stack to `.unpacked`. This is also a
+        # cheap insurance against any other constraint that happens to bind
+        # at the global level but not in the sub-pack (CoG, weight, etc.).
+        sorted_placements = sorted(
+            global_placements,
+            key=lambda p: (p.z, p.y, p.x),
+        )
+        real_state = PalletState(self.pallet, "P001", self.config,
+                                 rng=self._rng)
+        demoted: List[Box] = []
+        for p in sorted_placements:
+            # Build a candidate Placement that re-feeds the real state's
+            # feasibility check. We bypass try_place's EP-search because we
+            # already have the position.
+            if real_state.feasible(p):
+                real_state._commit(p)
+            else:
+                demoted.append(p.box)
+        if not real_state.placements:
+            return PackResult(pallets=[], unpacked=remaining + demoted)
+        return PackResult(pallets=[real_state], unpacked=remaining + demoted)
+
+    def _regen_top_load(self, st: "PalletState") -> dict:
+        """Rebuild the per-placement top-load cache after a removal."""
+        st._top_load = {id(p): 0.0 for p in st.placements}
+        # For every placement, distribute its weight onto its supporters
+        # using the same model as _commit. Iterate placements in
+        # bottom-up z order so supporters are processed before supportees.
+        for p in sorted(st.placements, key=lambda pl: pl.z):
+            sups = st._supporters_of(p)
+            total_area = sum(a for _, a in sups)
+            if total_area <= 0:
+                continue
+            for s, a in sups:
+                share = p.box.weight * (a / total_area)
+                st._top_load[id(s)] = st._top_load.get(id(s), 0.0) + share
+                st._propagate_load(s, share, set())
+        return st._top_load
 
     # -------- multi-start search (v1) -------------------------------------
     def _multi_start(self, boxes: List[Box]) -> PackResult:

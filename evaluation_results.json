@@ -1,0 +1,876 @@
+{
+  "bench|A1 empty input": {
+    "lb": {
+      "volume": 0,
+      "per_sku_max": 0,
+      "geometric": 0,
+      "lp": 0,
+      "best": 0
+    },
+    "n_boxes": 0,
+    "v1": {
+      "pallets": 0,
+      "unpacked": 0,
+      "util_pct": 0.0,
+      "runtime_s": 2.3365020751953125e-05,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 0,
+      "unpacked": 0,
+      "util_pct": 0.0,
+      "runtime_s": 0.3644535541534424,
+      "errors": 0
+    }
+  },
+  "bench|A2 single fitting box": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 1,
+      "best": 1
+    },
+    "n_boxes": 1,
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 2.25,
+      "runtime_s": 0.0009789466857910156,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 2.25,
+      "runtime_s": 0.05926847457885742,
+      "errors": 0
+    }
+  },
+  "bench|A3 single too-big box": {
+    "lb": {
+      "volume": 0,
+      "per_sku_max": 0,
+      "geometric": 0,
+      "lp": 0,
+      "best": 0
+    },
+    "n_boxes": 1,
+    "v1": {
+      "pallets": 0,
+      "unpacked": 1,
+      "util_pct": 0.0,
+      "runtime_s": 0.0003337860107421875,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 0,
+      "unpacked": 1,
+      "util_pct": 0.0,
+      "runtime_s": 0.02818775177001953,
+      "errors": 0
+    }
+  },
+  "bench|A4 box exactly = pallet": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 1,
+      "geometric": 1,
+      "lp": 1,
+      "best": 1
+    },
+    "n_boxes": 1,
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 100.0,
+      "runtime_s": 0.0006215572357177734,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 100.0,
+      "runtime_s": 0.043038368225097656,
+      "errors": 0
+    }
+  },
+  "bench|A5 single too-heavy box": {
+    "lb": {
+      "volume": 0,
+      "per_sku_max": 0,
+      "geometric": 0,
+      "lp": 0,
+      "best": 0
+    },
+    "n_boxes": 1,
+    "v1": {
+      "pallets": 0,
+      "unpacked": 1,
+      "util_pct": 0.0,
+      "runtime_s": 0.00044608116149902344,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 0,
+      "unpacked": 1,
+      "util_pct": 0.0,
+      "runtime_s": 0.03545570373535156,
+      "errors": 0
+    }
+  },
+  "bench|B1 perfect 2\u00d72\u00d72 fill": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 1,
+      "best": 1
+    },
+    "n_boxes": 8,
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 100.0,
+      "runtime_s": 0.01687788963317871,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 100.0,
+      "runtime_s": 1.671051263809204,
+      "errors": 0
+    }
+  },
+  "bench|B2 12 boxes -> 2 pallets": {
+    "lb": {
+      "volume": 2,
+      "per_sku_max": 2,
+      "geometric": 0,
+      "lp": 2,
+      "best": 2
+    },
+    "n_boxes": 12,
+    "v1": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 75.0,
+      "runtime_s": 0.029392719268798828,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 75.0,
+      "runtime_s": 23.485718250274658,
+      "errors": 0
+    }
+  },
+  "bench|B3 4 large boxes -> 2 pallets exact": {
+    "lb": {
+      "volume": 2,
+      "per_sku_max": 2,
+      "geometric": 2,
+      "lp": 2,
+      "best": 2
+    },
+    "n_boxes": 4,
+    "v1": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 100.0,
+      "runtime_s": 0.0056056976318359375,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 100.0,
+      "runtime_s": 0.5034973621368408,
+      "errors": 0
+    }
+  },
+  "bench|B4 100 tiny boxes -> 1 pallet": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 1,
+      "best": 1
+    },
+    "n_boxes": 100,
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 66.66666666666666,
+      "runtime_s": 12.617907285690308,
+      "errors": 0
+    }
+  },
+  "bench|C1 user's headline mix": {
+    "lb": {
+      "volume": 4,
+      "per_sku_max": 3,
+      "geometric": 0,
+      "lp": 4,
+      "best": 4
+    },
+    "n_boxes": 45,
+    "v1": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 0.1564772129058838,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 21.280062198638916,
+      "errors": 0
+    }
+  },
+  "bench|C2 BR-lite (5 SKU \u00d7 8)": {
+    "lb": {
+      "volume": 3,
+      "per_sku_max": 2,
+      "geometric": 0,
+      "lp": 3,
+      "best": 3
+    },
+    "n_boxes": 40,
+    "v1": {
+      "pallets": 4,
+      "unpacked": 0,
+      "util_pct": 65.0,
+      "runtime_s": 0.24496221542358398,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 4,
+      "unpacked": 0,
+      "util_pct": 65.0,
+      "runtime_s": 12.118474245071411,
+      "errors": 0
+    }
+  },
+  "bench|C3 Pareto-distributed 30": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 1,
+      "geometric": 1,
+      "lp": 1,
+      "best": 1
+    },
+    "n_boxes": 30,
+    "v1": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 40.54054166666667,
+      "runtime_s": 0.36856889724731445,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 40.54054166666667,
+      "runtime_s": 11.810489416122437,
+      "errors": 0
+    }
+  },
+  "bench|D1 base: all constraints relaxed": {
+    "lb": {
+      "volume": 4,
+      "per_sku_max": 3,
+      "geometric": 0,
+      "lp": 4,
+      "best": 4
+    },
+    "n_boxes": 45,
+    "v1": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 0.15058135986328125,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 8.584990978240967,
+      "errors": 0
+    }
+  },
+  "bench|D2 + support_ratio=0.8 (default)": {
+    "lb": {
+      "volume": 4,
+      "per_sku_max": 3,
+      "geometric": 0,
+      "lp": 4,
+      "best": 4
+    },
+    "n_boxes": 45,
+    "v1": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 0.15108180046081543,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 8.754296779632568,
+      "errors": 0
+    }
+  },
+  "bench|D3 + support_ratio=1.0 (no overhang)": {
+    "lb": {
+      "volume": 4,
+      "per_sku_max": 3,
+      "geometric": 0,
+      "lp": 4,
+      "best": 4
+    },
+    "n_boxes": 45,
+    "v1": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 0.15414047241210938,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 8.783176898956299,
+      "errors": 0
+    }
+  },
+  "bench|D4 + binding weight limit": {
+    "lb": {
+      "volume": 4,
+      "per_sku_max": 3,
+      "geometric": 0,
+      "lp": 4,
+      "best": 4
+    },
+    "n_boxes": 45,
+    "v1": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 0.1535043716430664,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 8.834295749664307,
+      "errors": 0
+    }
+  },
+  "bench|D5 + tight CoG envelope": {
+    "lb": {
+      "volume": 4,
+      "per_sku_max": 3,
+      "geometric": 0,
+      "lp": 4,
+      "best": 4
+    },
+    "n_boxes": 45,
+    "v1": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 0.15189814567565918,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 8.791842460632324,
+      "errors": 0
+    }
+  },
+  "bench|D6 + this-side-up for all": {
+    "lb": {
+      "volume": 4,
+      "per_sku_max": 3,
+      "geometric": 0,
+      "lp": 4,
+      "best": 4
+    },
+    "n_boxes": 45,
+    "v1": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 0.10755038261413574,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 6.345040798187256,
+      "errors": 0
+    }
+  },
+  "bench|D7 + NO rotation at all": {
+    "lb": {
+      "volume": 4,
+      "per_sku_max": 3,
+      "geometric": 0,
+      "lp": 4,
+      "best": 4
+    },
+    "n_boxes": 45,
+    "v1": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 0.06138801574707031,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util_pct": 68.5,
+      "runtime_s": 2.6809890270233154,
+      "errors": 0
+    }
+  },
+  "bench|D8 + fragile B boxes": {
+    "lb": {
+      "volume": 4,
+      "per_sku_max": 3,
+      "geometric": 0,
+      "lp": 4,
+      "best": 4
+    },
+    "n_boxes": 45,
+    "v1": {
+      "pallets": 6,
+      "unpacked": 0,
+      "util_pct": 57.08333333333333,
+      "runtime_s": 0.19038963317871094,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 6,
+      "unpacked": 0,
+      "util_pct": 57.08333333333333,
+      "runtime_s": 10.091209888458252,
+      "errors": 0
+    }
+  },
+  "bench|E1 boxes that MUST rotate": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 1,
+      "best": 1
+    },
+    "n_boxes": 8,
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 48.0,
+      "runtime_s": 0.015125036239624023,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 48.0,
+      "runtime_s": 1.2818522453308105,
+      "errors": 0
+    }
+  },
+  "bench|E2 all fragile": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 1,
+      "best": 1
+    },
+    "n_boxes": 12,
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 30.0,
+      "runtime_s": 0.09067583084106445,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 30.0,
+      "runtime_s": 3.025540828704834,
+      "errors": 0
+    }
+  },
+  "bench|E3 weight forces sparse layout": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 3,
+      "geometric": 0,
+      "lp": 1,
+      "best": 3
+    },
+    "n_boxes": 6,
+    "v1": {
+      "pallets": 3,
+      "unpacked": 0,
+      "util_pct": 10.666666666666668,
+      "runtime_s": 0.016629695892333984,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 3,
+      "unpacked": 0,
+      "util_pct": 10.666666666666668,
+      "runtime_s": 0.6362829208374023,
+      "errors": 0
+    }
+  },
+  "bench|E4 needle eye: many almost-too-big": {
+    "lb": {
+      "volume": 5,
+      "per_sku_max": 6,
+      "geometric": 6,
+      "lp": 5,
+      "best": 6
+    },
+    "n_boxes": 6,
+    "v1": {
+      "pallets": 6,
+      "unpacked": 0,
+      "util_pct": 82.72916666666667,
+      "runtime_s": 0.011237621307373047,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 6,
+      "unpacked": 0,
+      "util_pct": 82.72916666666667,
+      "runtime_s": 0.4507181644439697,
+      "errors": 0
+    }
+  },
+  "bench|F1 e-commerce: 50 small + 3 big": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 1,
+      "best": 1
+    },
+    "n_boxes": 53,
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 72.5,
+      "runtime_s": 2.6991124153137207,
+      "errors": 0
+    }
+  },
+  "bench|F3 heavy industrial: few big": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 2,
+      "geometric": 0,
+      "lp": 1,
+      "best": 2
+    },
+    "n_boxes": 8,
+    "v1": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 40.0,
+      "runtime_s": 0.009929180145263672,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 40.0,
+      "runtime_s": 0.9152872562408447,
+      "errors": 0
+    }
+  },
+  "fail|F2 large block of identicals": {
+    "lb": {
+      "volume": 2,
+      "per_sku_max": 2,
+      "geometric": 0,
+      "lp": 2,
+      "best": 2
+    },
+    "n_boxes": 30,
+    "v1": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 64.5,
+      "runtime_s": 0.2986609935760498,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 64.5,
+      "runtime_s": 13.090756893157959,
+      "errors": 0
+    }
+  },
+  "fail|F3 interlock big+small": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 1,
+      "best": 1
+    },
+    "n_boxes": 12,
+    "v1": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 45.0,
+      "runtime_s": 0.03071737289428711,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 90.0,
+      "runtime_s": 1.433302402496338,
+      "errors": 0
+    }
+  },
+  "fail|F4 height pairing": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 1,
+      "best": 1
+    },
+    "n_boxes": 8,
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 100.0,
+      "runtime_s": 0.013398408889770508,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 100.0,
+      "runtime_s": 0.6259994506835938,
+      "errors": 0
+    }
+  },
+  "fail|F5 wrong-rotation cascade": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 1,
+      "best": 1
+    },
+    "n_boxes": 6,
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 60.0,
+      "runtime_s": 0.01064610481262207,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 60.0,
+      "runtime_s": 0.4595963954925537,
+      "errors": 0
+    }
+  },
+  "fail|F6 fragility + dense fit interact": {
+    "lb": {
+      "volume": 2,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 2,
+      "best": 2
+    },
+    "n_boxes": 16,
+    "v1": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 53.333333333333336,
+      "runtime_s": 0.12222981452941895,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 53.333333333333336,
+      "runtime_s": 14.059506893157959,
+      "errors": 0
+    }
+  },
+  "fail|F7 layered pyramid": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 1,
+      "best": 1
+    },
+    "n_boxes": 25,
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 86.66666666666667,
+      "runtime_s": 0.29166316986083984,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 86.66666666666667,
+      "runtime_s": 12.015559911727905,
+      "errors": 0
+    }
+  },
+  "fail|F8 strongly heterogeneous": {
+    "lb": {
+      "volume": 2,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 2,
+      "best": 2
+    },
+    "n_boxes": 21,
+    "v1": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 76.5,
+      "runtime_s": 0.07335352897644043,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 76.5,
+      "runtime_s": 13.594748258590698,
+      "errors": 0
+    }
+  },
+  "fail|F9 long this-side-up": {
+    "lb": {
+      "volume": 2,
+      "per_sku_max": 3,
+      "geometric": 0,
+      "lp": 2,
+      "best": 3
+    },
+    "n_boxes": 18,
+    "v1": {
+      "pallets": 3,
+      "unpacked": 0,
+      "util_pct": 66.0,
+      "runtime_s": 0.01989006996154785,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 3,
+      "unpacked": 0,
+      "util_pct": 66.0,
+      "runtime_s": 11.255440950393677,
+      "errors": 0
+    }
+  },
+  "fail|F10 overhang test (PASSES: overhang IS used)": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 1,
+      "best": 1
+    },
+    "n_boxes": 4,
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 140.0,
+      "runtime_s": 0.0021963119506835938,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 140.0,
+      "runtime_s": 0.5868353843688965,
+      "errors": 0
+    }
+  },
+  "fail|F11 greedy leaves an item unpacked": {
+    "lb": {
+      "volume": 1,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 1,
+      "best": 1
+    },
+    "n_boxes": 7,
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 27.333333333333332,
+      "runtime_s": 0.02469944953918457,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util_pct": 27.333333333333332,
+      "runtime_s": 1.0309183597564697,
+      "errors": 0
+    }
+  },
+  "fail|F13 pure layered cargo": {
+    "lb": {
+      "volume": 2,
+      "per_sku_max": 1,
+      "geometric": 0,
+      "lp": 2,
+      "best": 2
+    },
+    "n_boxes": 22,
+    "v1": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 70.0,
+      "runtime_s": 0.08921408653259277,
+      "errors": 0
+    },
+    "quality_max": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util_pct": 70.0,
+      "runtime_s": 16.68239426612854,
+      "errors": 0
+    }
+  }
+}

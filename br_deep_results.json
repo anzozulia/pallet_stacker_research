@@ -1,0 +1,746 @@
+{
+  "thpack1|1|v1": {
+    "util_pct": 79.31502624493098,
+    "overflow": 28,
+    "runtime_s": 3.1045191287994385,
+    "errors": 0
+  },
+  "thpack1|1|quality_max": {
+    "util_pct": 80.25232621747965,
+    "overflow": 30,
+    "runtime_s": 7.35604190826416,
+    "errors": 0
+  },
+  "thpack1|2|v1": {
+    "util_pct": 88.03993204301018,
+    "overflow": 8,
+    "runtime_s": 7.714518070220947,
+    "errors": 0
+  },
+  "thpack1|2|quality_max": {
+    "util_pct": 88.94940846710593,
+    "overflow": 48,
+    "runtime_s": 19.778913736343384,
+    "errors": 0
+  },
+  "thpack1|3|v1": {
+    "util_pct": 73.20475300120108,
+    "overflow": 38,
+    "runtime_s": 2.9965527057647705,
+    "errors": 0
+  },
+  "thpack1|3|quality_max": {
+    "util_pct": 82.46580714545415,
+    "overflow": 25,
+    "runtime_s": 8.882980585098267,
+    "errors": 0
+  },
+  "thpack1|4|v1": {
+    "util_pct": 86.91016370429404,
+    "overflow": 66,
+    "runtime_s": 8.886751174926758,
+    "errors": 0
+  },
+  "thpack1|4|quality_max": {
+    "util_pct": 86.91016370429404,
+    "overflow": 66,
+    "runtime_s": 28.100094079971313,
+    "errors": 0
+  },
+  "thpack1|5|v1": {
+    "util_pct": 78.8356616002462,
+    "overflow": 34,
+    "runtime_s": 5.60621976852417,
+    "errors": 0
+  },
+  "thpack1|5|quality_max": {
+    "util_pct": 82.29199637615895,
+    "overflow": 27,
+    "runtime_s": 13.667438268661499,
+    "errors": 0
+  },
+  "thpack1|6|v1": {
+    "util_pct": 81.71169991512024,
+    "overflow": 44,
+    "runtime_s": 7.03068733215332,
+    "errors": 0
+  },
+  "thpack1|6|quality_max": {
+    "util_pct": 87.82693167942965,
+    "overflow": 18,
+    "runtime_s": 20.08474087715149,
+    "errors": 0
+  },
+  "thpack1|7|v1": {
+    "util_pct": 79.2753580802948,
+    "overflow": 32,
+    "runtime_s": 4.352489471435547,
+    "errors": 0
+  },
+  "thpack1|7|quality_max": {
+    "util_pct": 79.2753580802948,
+    "overflow": 32,
+    "runtime_s": 10.43392539024353,
+    "errors": 0
+  },
+  "thpack1|8|v1": {
+    "util_pct": 91.30573932140054,
+    "overflow": 29,
+    "runtime_s": 18.91421341896057,
+    "errors": 0
+  },
+  "thpack1|8|quality_max": {
+    "util_pct": 91.30573932140054,
+    "overflow": 29,
+    "runtime_s": 39.436209201812744,
+    "errors": 0
+  },
+  "thpack1|9|v1": {
+    "util_pct": 88.21275908436198,
+    "overflow": 18,
+    "runtime_s": 1.8046817779541016,
+    "errors": 0
+  },
+  "thpack1|9|quality_max": {
+    "util_pct": 88.21275908436198,
+    "overflow": 18,
+    "runtime_s": 4.850579738616943,
+    "errors": 0
+  },
+  "thpack1|10|v1": {
+    "util_pct": 88.65659320390222,
+    "overflow": 31,
+    "runtime_s": 4.328510761260986,
+    "errors": 0
+  },
+  "thpack1|10|quality_max": {
+    "util_pct": 88.65659320390222,
+    "overflow": 31,
+    "runtime_s": 12.181371927261353,
+    "errors": 0
+  },
+  "thpack1|11|v1": {
+    "util_pct": 71.99628310360848,
+    "overflow": 44,
+    "runtime_s": 2.0930910110473633,
+    "errors": 0
+  },
+  "thpack1|11|quality_max": {
+    "util_pct": 79.63701768250978,
+    "overflow": 18,
+    "runtime_s": 5.442934989929199,
+    "errors": 0
+  },
+  "thpack1|12|v1": {
+    "util_pct": 75.70217237705229,
+    "overflow": 36,
+    "runtime_s": 2.2314162254333496,
+    "errors": 0
+  },
+  "thpack1|12|quality_max": {
+    "util_pct": 82.87009274294591,
+    "overflow": 17,
+    "runtime_s": 6.053601503372192,
+    "errors": 0
+  },
+  "thpack1|14|v1": {
+    "util_pct": 86.59331689798675,
+    "overflow": 29,
+    "runtime_s": 3.9858598709106445,
+    "errors": 0
+  },
+  "thpack1|14|quality_max": {
+    "util_pct": 86.59331689798675,
+    "overflow": 29,
+    "runtime_s": 10.38595461845398,
+    "errors": 0
+  },
+  "thpack1|15|v1": {
+    "util_pct": 80.5386708107314,
+    "overflow": 37,
+    "runtime_s": 3.826047420501709,
+    "errors": 0
+  },
+  "thpack1|15|quality_max": {
+    "util_pct": 80.5386708107314,
+    "overflow": 37,
+    "runtime_s": 8.696409702301025,
+    "errors": 0
+  },
+  "thpack1|16|v1": {
+    "util_pct": 88.76155963418614,
+    "overflow": 28,
+    "runtime_s": 11.219714403152466,
+    "errors": 0
+  },
+  "thpack1|16|quality_max": {
+    "util_pct": 88.76155963418614,
+    "overflow": 28,
+    "runtime_s": 24.85846710205078,
+    "errors": 0
+  },
+  "thpack1|17|v1": {
+    "util_pct": 90.60293882076277,
+    "overflow": 46,
+    "runtime_s": 20.396493196487427,
+    "errors": 0
+  },
+  "thpack1|18|v1": {
+    "util_pct": 79.6395833513351,
+    "overflow": 17,
+    "runtime_s": 1.4930684566497803,
+    "errors": 0
+  },
+  "thpack1|18|quality_max": {
+    "util_pct": 79.6395833513351,
+    "overflow": 17,
+    "runtime_s": 3.408212423324585,
+    "errors": 0
+  },
+  "thpack1|19|v1": {
+    "util_pct": 84.01622552893656,
+    "overflow": 20,
+    "runtime_s": 4.337672710418701,
+    "errors": 0
+  },
+  "thpack1|19|quality_max": {
+    "util_pct": 91.28091348445079,
+    "overflow": 37,
+    "runtime_s": 11.645700693130493,
+    "errors": 0
+  },
+  "thpack1|20|v1": {
+    "util_pct": 72.87199705413362,
+    "overflow": 21,
+    "runtime_s": 1.9818050861358643,
+    "errors": 0
+  },
+  "thpack1|20|quality_max": {
+    "util_pct": 87.13213726195279,
+    "overflow": 16,
+    "runtime_s": 4.80620551109314,
+    "errors": 0
+  },
+  "thpack3|1|v1": {
+    "util_pct": 77.44337083685338,
+    "overflow": 28,
+    "runtime_s": 1.9013128280639648,
+    "errors": 0
+  },
+  "thpack3|1|quality_max": {
+    "util_pct": 81.66037324499278,
+    "overflow": 30,
+    "runtime_s": 4.592521905899048,
+    "errors": 0
+  },
+  "thpack3|2|v1": {
+    "util_pct": 83.1008567073961,
+    "overflow": 22,
+    "runtime_s": 4.101543426513672,
+    "errors": 0
+  },
+  "thpack3|2|quality_max": {
+    "util_pct": 84.10379393292438,
+    "overflow": 23,
+    "runtime_s": 9.952491521835327,
+    "errors": 0
+  },
+  "thpack3|3|v1": {
+    "util_pct": 78.68951485595365,
+    "overflow": 37,
+    "runtime_s": 6.994868755340576,
+    "errors": 0
+  },
+  "thpack3|3|quality_max": {
+    "util_pct": 79.44645362753002,
+    "overflow": 33,
+    "runtime_s": 14.857306957244873,
+    "errors": 0
+  },
+  "thpack3|4|v1": {
+    "util_pct": 76.54507767130326,
+    "overflow": 72,
+    "runtime_s": 12.464428424835205,
+    "errors": 0
+  },
+  "thpack3|4|quality_max": {
+    "util_pct": 83.17428402219768,
+    "overflow": 42,
+    "runtime_s": 27.155900955200195,
+    "errors": 0
+  },
+  "thpack3|5|v1": {
+    "util_pct": 78.6226678834761,
+    "overflow": 41,
+    "runtime_s": 2.674093246459961,
+    "errors": 0
+  },
+  "thpack3|5|quality_max": {
+    "util_pct": 80.08551786297069,
+    "overflow": 40,
+    "runtime_s": 6.456421852111816,
+    "errors": 0
+  },
+  "thpack3|6|v1": {
+    "util_pct": 81.95106485226466,
+    "overflow": 33,
+    "runtime_s": 8.626306533813477,
+    "errors": 0
+  },
+  "thpack3|6|quality_max": {
+    "util_pct": 82.90301439499734,
+    "overflow": 30,
+    "runtime_s": 17.928967237472534,
+    "errors": 0
+  },
+  "thpack3|7|v1": {
+    "util_pct": 85.74618090889815,
+    "overflow": 31,
+    "runtime_s": 8.094183444976807,
+    "errors": 0
+  },
+  "thpack3|7|quality_max": {
+    "util_pct": 85.74618090889815,
+    "overflow": 31,
+    "runtime_s": 16.029112339019775,
+    "errors": 0
+  },
+  "thpack3|8|v1": {
+    "util_pct": 75.22105629781964,
+    "overflow": 27,
+    "runtime_s": 3.839102268218994,
+    "errors": 0
+  },
+  "thpack3|8|quality_max": {
+    "util_pct": 80.82840527730161,
+    "overflow": 21,
+    "runtime_s": 8.158466339111328,
+    "errors": 0
+  },
+  "thpack3|9|v1": {
+    "util_pct": 83.23090155342607,
+    "overflow": 38,
+    "runtime_s": 5.537138223648071,
+    "errors": 0
+  },
+  "thpack3|9|quality_max": {
+    "util_pct": 83.25416538992516,
+    "overflow": 22,
+    "runtime_s": 11.709593534469604,
+    "errors": 0
+  },
+  "thpack3|10|v1": {
+    "util_pct": 76.12399226045393,
+    "overflow": 65,
+    "runtime_s": 13.58167576789856,
+    "errors": 0
+  },
+  "thpack3|10|quality_max": {
+    "util_pct": 80.59274926037617,
+    "overflow": 52,
+    "runtime_s": 28.256357192993164,
+    "errors": 0
+  },
+  "thpack3|11|v1": {
+    "util_pct": 77.70993452227047,
+    "overflow": 40,
+    "runtime_s": 4.112548828125,
+    "errors": 0
+  },
+  "thpack3|11|quality_max": {
+    "util_pct": 78.84586777765887,
+    "overflow": 32,
+    "runtime_s": 8.690574407577515,
+    "errors": 0
+  },
+  "thpack3|12|v1": {
+    "util_pct": 70.43813780300316,
+    "overflow": 37,
+    "runtime_s": 3.043144702911377,
+    "errors": 0
+  },
+  "thpack3|12|quality_max": {
+    "util_pct": 80.75203342548029,
+    "overflow": 18,
+    "runtime_s": 6.560277462005615,
+    "errors": 0
+  },
+  "thpack3|13|v1": {
+    "util_pct": 80.0045796523851,
+    "overflow": 57,
+    "runtime_s": 16.662678003311157,
+    "errors": 0
+  },
+  "thpack3|13|quality_max": {
+    "util_pct": 84.34192256332915,
+    "overflow": 37,
+    "runtime_s": 36.13017177581787,
+    "errors": 0
+  },
+  "thpack3|14|v1": {
+    "util_pct": 71.04512453131679,
+    "overflow": 35,
+    "runtime_s": 2.6438591480255127,
+    "errors": 0
+  },
+  "thpack3|14|quality_max": {
+    "util_pct": 84.41185365584543,
+    "overflow": 26,
+    "runtime_s": 6.446983098983765,
+    "errors": 0
+  },
+  "thpack3|15|v1": {
+    "util_pct": 79.14161428426148,
+    "overflow": 33,
+    "runtime_s": 3.4484527111053467,
+    "errors": 0
+  },
+  "thpack3|15|quality_max": {
+    "util_pct": 85.70174365777966,
+    "overflow": 24,
+    "runtime_s": 6.793070554733276,
+    "errors": 0
+  },
+  "thpack3|16|v1": {
+    "util_pct": 78.94542370425415,
+    "overflow": 48,
+    "runtime_s": 5.729108810424805,
+    "errors": 0
+  },
+  "thpack3|16|quality_max": {
+    "util_pct": 81.53126892263843,
+    "overflow": 47,
+    "runtime_s": 11.850395679473877,
+    "errors": 0
+  },
+  "thpack3|17|v1": {
+    "util_pct": 79.92050082387216,
+    "overflow": 23,
+    "runtime_s": 1.6375033855438232,
+    "errors": 0
+  },
+  "thpack3|17|quality_max": {
+    "util_pct": 79.93808828426548,
+    "overflow": 24,
+    "runtime_s": 4.066655158996582,
+    "errors": 0
+  },
+  "thpack3|18|v1": {
+    "util_pct": 78.19232346570013,
+    "overflow": 21,
+    "runtime_s": 1.503737449645996,
+    "errors": 0
+  },
+  "thpack3|18|quality_max": {
+    "util_pct": 79.61139090490342,
+    "overflow": 17,
+    "runtime_s": 3.8731188774108887,
+    "errors": 0
+  },
+  "thpack3|20|v1": {
+    "util_pct": 84.49348645812077,
+    "overflow": 42,
+    "runtime_s": 4.518604516983032,
+    "errors": 0
+  },
+  "thpack3|20|quality_max": {
+    "util_pct": 84.49348645812077,
+    "overflow": 42,
+    "runtime_s": 10.625490427017212,
+    "errors": 0
+  },
+  "thpack5|1|v1": {
+    "util_pct": 68.6629076738091,
+    "overflow": 35,
+    "runtime_s": 2.5047476291656494,
+    "errors": 0
+  },
+  "thpack5|1|quality_max": {
+    "util_pct": 75.95344839848426,
+    "overflow": 28,
+    "runtime_s": 5.586000680923462,
+    "errors": 0
+  },
+  "thpack5|2|v1": {
+    "util_pct": 83.10931477366613,
+    "overflow": 36,
+    "runtime_s": 7.060389280319214,
+    "errors": 0
+  },
+  "thpack5|2|quality_max": {
+    "util_pct": 85.48194693053618,
+    "overflow": 27,
+    "runtime_s": 15.201029539108276,
+    "errors": 0
+  },
+  "thpack5|3|v1": {
+    "util_pct": 78.14574926502894,
+    "overflow": 38,
+    "runtime_s": 6.189345359802246,
+    "errors": 0
+  },
+  "thpack5|3|quality_max": {
+    "util_pct": 78.14574926502894,
+    "overflow": 38,
+    "runtime_s": 12.13822603225708,
+    "errors": 0
+  },
+  "thpack5|4|v1": {
+    "util_pct": 83.14404103474887,
+    "overflow": 38,
+    "runtime_s": 7.7022199630737305,
+    "errors": 0
+  },
+  "thpack5|4|quality_max": {
+    "util_pct": 83.14404103474887,
+    "overflow": 38,
+    "runtime_s": 15.79519772529602,
+    "errors": 0
+  },
+  "thpack5|5|v1": {
+    "util_pct": 80.14954991123184,
+    "overflow": 37,
+    "runtime_s": 4.797038316726685,
+    "errors": 0
+  },
+  "thpack5|5|quality_max": {
+    "util_pct": 80.14954991123184,
+    "overflow": 37,
+    "runtime_s": 10.541755437850952,
+    "errors": 0
+  },
+  "thpack5|6|v1": {
+    "util_pct": 81.32709552330671,
+    "overflow": 35,
+    "runtime_s": 8.134872436523438,
+    "errors": 0
+  },
+  "thpack5|6|quality_max": {
+    "util_pct": 81.32709552330671,
+    "overflow": 35,
+    "runtime_s": 15.426790237426758,
+    "errors": 0
+  },
+  "thpack5|7|v1": {
+    "util_pct": 78.95783329932382,
+    "overflow": 37,
+    "runtime_s": 6.510222673416138,
+    "errors": 0
+  },
+  "thpack5|7|quality_max": {
+    "util_pct": 78.95783329932382,
+    "overflow": 37,
+    "runtime_s": 12.124492406845093,
+    "errors": 0
+  },
+  "thpack5|8|v1": {
+    "util_pct": 72.23750250086243,
+    "overflow": 33,
+    "runtime_s": 2.6793689727783203,
+    "errors": 0
+  },
+  "thpack5|8|quality_max": {
+    "util_pct": 76.78809503077805,
+    "overflow": 26,
+    "runtime_s": 5.745396375656128,
+    "errors": 0
+  },
+  "thpack5|9|v1": {
+    "util_pct": 80.50316354942335,
+    "overflow": 44,
+    "runtime_s": 6.4509923458099365,
+    "errors": 0
+  },
+  "thpack5|9|quality_max": {
+    "util_pct": 80.50316354942335,
+    "overflow": 44,
+    "runtime_s": 12.647194385528564,
+    "errors": 0
+  },
+  "thpack5|10|v1": {
+    "util_pct": 76.04077419389145,
+    "overflow": 45,
+    "runtime_s": 6.6472086906433105,
+    "errors": 0
+  },
+  "thpack5|10|quality_max": {
+    "util_pct": 82.22439499069779,
+    "overflow": 41,
+    "runtime_s": 12.805304050445557,
+    "errors": 0
+  },
+  "thpack5|11|v1": {
+    "util_pct": 76.44882853289606,
+    "overflow": 48,
+    "runtime_s": 7.100450754165649,
+    "errors": 0
+  },
+  "thpack5|11|quality_max": {
+    "util_pct": 78.62742035293235,
+    "overflow": 42,
+    "runtime_s": 14.280996084213257,
+    "errors": 0
+  },
+  "thpack5|12|v1": {
+    "util_pct": 68.91711493863997,
+    "overflow": 35,
+    "runtime_s": 3.3793158531188965,
+    "errors": 0
+  },
+  "thpack5|12|quality_max": {
+    "util_pct": 77.79070988600056,
+    "overflow": 24,
+    "runtime_s": 7.23045802116394,
+    "errors": 0
+  },
+  "thpack5|14|v1": {
+    "util_pct": 80.17374097778568,
+    "overflow": 46,
+    "runtime_s": 4.525278806686401,
+    "errors": 0
+  },
+  "thpack5|14|quality_max": {
+    "util_pct": 84.7206445279136,
+    "overflow": 41,
+    "runtime_s": 9.966163396835327,
+    "errors": 0
+  },
+  "thpack5|15|v1": {
+    "util_pct": 74.46342958136394,
+    "overflow": 39,
+    "runtime_s": 3.8674747943878174,
+    "errors": 0
+  },
+  "thpack5|15|quality_max": {
+    "util_pct": 80.43339530376255,
+    "overflow": 29,
+    "runtime_s": 7.163706541061401,
+    "errors": 0
+  },
+  "thpack5|16|v1": {
+    "util_pct": 77.29630018591129,
+    "overflow": 33,
+    "runtime_s": 4.2897796630859375,
+    "errors": 0
+  },
+  "thpack5|16|quality_max": {
+    "util_pct": 80.36475701587457,
+    "overflow": 27,
+    "runtime_s": 8.932647705078125,
+    "errors": 0
+  },
+  "thpack5|17|v1": {
+    "util_pct": 80.25230960045357,
+    "overflow": 27,
+    "runtime_s": 3.106215238571167,
+    "errors": 0
+  },
+  "thpack5|17|quality_max": {
+    "util_pct": 82.70161936242465,
+    "overflow": 26,
+    "runtime_s": 7.165520906448364,
+    "errors": 0
+  },
+  "thpack5|18|v1": {
+    "util_pct": 81.39166928661777,
+    "overflow": 26,
+    "runtime_s": 1.680342197418213,
+    "errors": 0
+  },
+  "thpack5|18|quality_max": {
+    "util_pct": 83.48019017853997,
+    "overflow": 11,
+    "runtime_s": 4.089197874069214,
+    "errors": 0
+  },
+  "thpack5|19|v1": {
+    "util_pct": 83.55317548044808,
+    "overflow": 36,
+    "runtime_s": 6.729519605636597,
+    "errors": 0
+  },
+  "thpack5|19|quality_max": {
+    "util_pct": 84.2181722467748,
+    "overflow": 37,
+    "runtime_s": 14.298892498016357,
+    "errors": 0
+  },
+  "thpack5|20|v1": {
+    "util_pct": 80.38702383080943,
+    "overflow": 48,
+    "runtime_s": 5.79921817779541,
+    "errors": 0
+  },
+  "thpack5|20|quality_max": {
+    "util_pct": 80.38702383080943,
+    "overflow": 48,
+    "runtime_s": 11.969558000564575,
+    "errors": 0
+  },
+  "thpack7|1|v1": {
+    "util_pct": 80.59959547511734,
+    "overflow": 30,
+    "runtime_s": 4.037658214569092,
+    "errors": 0
+  },
+  "thpack7|1|quality_max": {
+    "util_pct": 80.59959547511734,
+    "overflow": 30,
+    "runtime_s": 8.22411036491394,
+    "errors": 0
+  },
+  "thpack7|2|v1": {
+    "util_pct": 77.19534842912606,
+    "overflow": 37,
+    "runtime_s": 6.5862717628479,
+    "errors": 0
+  },
+  "thpack7|2|quality_max": {
+    "util_pct": 81.76567533920336,
+    "overflow": 29,
+    "runtime_s": 12.512610912322998,
+    "errors": 0
+  },
+  "thpack7|3|v1": {
+    "util_pct": 76.18574112933297,
+    "overflow": 38,
+    "runtime_s": 5.2711663246154785,
+    "errors": 0
+  },
+  "thpack7|3|quality_max": {
+    "util_pct": 79.77307456857216,
+    "overflow": 31,
+    "runtime_s": 10.267992496490479,
+    "errors": 0
+  },
+  "thpack7|4|v1": {
+    "util_pct": 80.4619533247678,
+    "overflow": 47,
+    "runtime_s": 9.533111333847046,
+    "errors": 0
+  },
+  "thpack7|4|quality_max": {
+    "util_pct": 80.4619533247678,
+    "overflow": 47,
+    "runtime_s": 18.481542110443115,
+    "errors": 0
+  },
+  "thpack7|5|v1": {
+    "util_pct": 76.3218113090162,
+    "overflow": 40,
+    "runtime_s": 4.995146751403809,
+    "errors": 0
+  },
+  "thpack7|5|quality_max": {
+    "util_pct": 78.14553324369001,
+    "overflow": 38,
+    "runtime_s": 9.848003625869751,
+    "errors": 0
+  },
+  "thpack7|6|v1": {
+    "util_pct": 76.27092665178225,
+    "overflow": 39,
+    "runtime_s": 10.282155990600586,
+    "errors": 0
+  }
+}

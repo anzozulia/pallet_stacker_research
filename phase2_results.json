@@ -1,0 +1,265 @@
+{
+  "bench|A1 empty input": {
+    "v1": {
+      "pallets": 0,
+      "unpacked": 0,
+      "util": 0.0,
+      "runtime": 3.1948089599609375e-05,
+      "errors": 0
+    },
+    "v1+layer": {
+      "pallets": 0,
+      "unpacked": 0,
+      "util": 0.0,
+      "runtime": 8.082389831542969e-05,
+      "errors": 0
+    },
+    "v1+mip": {
+      "pallets": 0,
+      "unpacked": 0,
+      "util": 0.0,
+      "runtime": 0.4545896053314209,
+      "errors": 0
+    },
+    "all_on": {
+      "pallets": 0,
+      "unpacked": 0,
+      "util": 0.0,
+      "runtime": 7.104873657226562e-05,
+      "errors": 0
+    }
+  },
+  "bench|A2 single fitting box": {
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util": 0.0225,
+      "runtime": 0.0008633136749267578,
+      "errors": 0
+    },
+    "v1+layer": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util": 0.0225,
+      "runtime": 0.0026819705963134766,
+      "errors": 0
+    },
+    "v1+mip": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util": 0.0225,
+      "runtime": 0.0008306503295898438,
+      "errors": 0
+    },
+    "all_on": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util": 0.0225,
+      "runtime": 0.014887809753417969,
+      "errors": 0
+    }
+  },
+  "bench|A3 single too-big box": {
+    "v1": {
+      "pallets": 0,
+      "unpacked": 1,
+      "util": 0.0,
+      "runtime": 0.0003077983856201172,
+      "errors": 0
+    },
+    "v1+layer": {
+      "pallets": 0,
+      "unpacked": 1,
+      "util": 0.0,
+      "runtime": 0.0004930496215820312,
+      "errors": 0
+    },
+    "v1+mip": {
+      "pallets": 0,
+      "unpacked": 1,
+      "util": 0.0,
+      "runtime": 0.0018799304962158203,
+      "errors": 0
+    },
+    "all_on": {
+      "pallets": 0,
+      "unpacked": 1,
+      "util": 0.0,
+      "runtime": 0.006367683410644531,
+      "errors": 0
+    }
+  },
+  "bench|A4 box exactly = pallet": {
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util": 1.0,
+      "runtime": 0.0008943080902099609,
+      "errors": 0
+    },
+    "v1+layer": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util": 1.0,
+      "runtime": 0.002079010009765625,
+      "errors": 0
+    },
+    "v1+mip": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util": 1.0,
+      "runtime": 0.0005714893341064453,
+      "errors": 0
+    },
+    "all_on": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util": 1.0,
+      "runtime": 0.01092386245727539,
+      "errors": 0
+    }
+  },
+  "bench|A5 single too-heavy box": {
+    "v1": {
+      "pallets": 0,
+      "unpacked": 1,
+      "util": 0.0,
+      "runtime": 0.00046539306640625,
+      "errors": 0
+    },
+    "v1+layer": {
+      "pallets": 0,
+      "unpacked": 1,
+      "util": 0.0,
+      "runtime": 0.0018014907836914062,
+      "errors": 0
+    },
+    "v1+mip": {
+      "pallets": 0,
+      "unpacked": 1,
+      "util": 0.0,
+      "runtime": 0.001447439193725586,
+      "errors": 0
+    },
+    "all_on": {
+      "pallets": 0,
+      "unpacked": 1,
+      "util": 0.0,
+      "runtime": 0.009891271591186523,
+      "errors": 0
+    }
+  },
+  "bench|B1 perfect 2\u00d72\u00d72 fill": {
+    "v1": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util": 1.0,
+      "runtime": 0.01739788055419922,
+      "errors": 0
+    },
+    "v1+layer": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util": 1.0,
+      "runtime": 0.04811263084411621,
+      "errors": 0
+    },
+    "v1+mip": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util": 1.0,
+      "runtime": 0.017351865768432617,
+      "errors": 0
+    },
+    "all_on": {
+      "pallets": 1,
+      "unpacked": 0,
+      "util": 1.0,
+      "runtime": 0.41716742515563965,
+      "errors": 0
+    }
+  },
+  "bench|B2 12 boxes -> 2 pallets": {
+    "v1": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util": 0.75,
+      "runtime": 0.031012773513793945,
+      "errors": 0
+    },
+    "v1+layer": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util": 0.75,
+      "runtime": 0.07382440567016602,
+      "errors": 0
+    },
+    "v1+mip": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util": 0.75,
+      "runtime": 0.031132936477661133,
+      "errors": 0
+    },
+    "all_on": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util": 0.75,
+      "runtime": 0.7274184226989746,
+      "errors": 0
+    }
+  },
+  "bench|B3 4 large boxes -> 2 pallets exact": {
+    "v1": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util": 1.0,
+      "runtime": 0.005496978759765625,
+      "errors": 0
+    },
+    "v1+layer": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util": 1.0,
+      "runtime": 0.011470317840576172,
+      "errors": 0
+    },
+    "v1+mip": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util": 1.0,
+      "runtime": 0.0053250789642333984,
+      "errors": 0
+    },
+    "all_on": {
+      "pallets": 2,
+      "unpacked": 0,
+      "util": 1.0,
+      "runtime": 0.11568331718444824,
+      "errors": 0
+    }
+  },
+  "bench|C1 user's headline mix": {
+    "v1": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util": 0.685,
+      "runtime": 0.14777541160583496,
+      "errors": 0
+    },
+    "v1+layer": {
+      "pallets": 5,
+      "unpacked": 0,
+      "util": 0.685,
+      "runtime": 0.24642086029052734,
+      "errors": 0
+    },
+    "v1+mip": {
+      "pallets": 4,
+      "unpacked": 0,
+      "util": 0.85625,
+      "runtime": 17.903060913085938,
+      "errors": 0
+    }
+  }
+}
