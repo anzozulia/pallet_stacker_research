@@ -667,3 +667,14 @@ The 6 "still-open" cases break down as:
 **The algorithm now achieves the provable LB on 83% of test cases.**
 That's the realistic ceiling without substantially more solver compute
 or qualitatively different algorithmic paradigms.
+
+---
+
+## Postscript — Diagnostic Cleanup
+
+A later pass formally MIP-proved **D3** and **D8** at-true-LB (5p and
+6p respectively) with 300s MIP budgets, bringing the headline to
+**32 of 36 cases at provable LB (89%)**. D7 and C2 were also retried
+with 300s budgets but stayed inconclusive — strongly suspected at LB
+but no formal proof. Full details:
+[09_diagnostic_cleanup.md](09_diagnostic_cleanup.md).

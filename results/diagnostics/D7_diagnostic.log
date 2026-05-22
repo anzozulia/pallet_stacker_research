@@ -1,0 +1,13 @@
+Diagnosing bench|D7 + NO rotation at all (N=45)
+  v1 warm-start: 5p/0u util=68.5% t=0.0s
+  Running MIP with max_pallets=4, time=300.0s…
+{
+  "verdict": "FEASIBLE",
+  "warm": 5,
+  "target": 4,
+  "mip_pallets": 4,
+  "mip_unpacked": 4,
+  "mip_util_pct": 77.0,
+  "mip_validator_errors": 0,
+  "mip_runtime_s": 300.6092689037323
+}

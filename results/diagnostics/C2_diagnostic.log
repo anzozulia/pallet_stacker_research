@@ -1,0 +1,13 @@
+Diagnosing bench|C2 BR-lite (5 SKU × 8) (N=40)
+  v1 warm-start: 4p/0u util=65.0% t=0.2s
+  Running MIP with max_pallets=3, time=300.0s…
+{
+  "verdict": "FEASIBLE",
+  "warm": 4,
+  "target": 3,
+  "mip_pallets": 3,
+  "mip_unpacked": 4,
+  "mip_util_pct": 77.0,
+  "mip_validator_errors": 0,
+  "mip_runtime_s": 300.4294741153717
+}

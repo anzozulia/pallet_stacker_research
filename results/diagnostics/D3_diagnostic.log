@@ -1,0 +1,13 @@
+Diagnosing bench|D3 + support_ratio=1.0 (no overhang) (N=45)
+  v1 warm-start: 5p/0u util=68.5% t=0.1s
+  Running MIP with max_pallets=4, time=300.0s…
+{
+  "verdict": "OPTIMAL",
+  "warm": 5,
+  "target": 4,
+  "mip_pallets": 4,
+  "mip_unpacked": 2,
+  "mip_util_pct": 81.5,
+  "mip_validator_errors": 0,
+  "mip_runtime_s": 10.12684416770935
+}

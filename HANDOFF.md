@@ -30,13 +30,20 @@ final answer is `min(candidates, key=quality)`.
 
 Tested on 41 internal cases + 86 Bischoff-Ratcliff benchmark instances.
 
-**Internal suite:** 30 of 36 testable cases at provable lower bound
-(83%). The remaining 6 split into:
-- 2 are constraint-bound at their true LB (D3 with `support_ratio=1.0`,
-  D7 with no rotation).
-- 1 is at the true LB but volume-LB was loose (D8 with fragility).
-- 3 exceed our MIP threshold and need bigger compute or different
-  algorithms (F2 N=120, F12 N=72, C4 N=80).
+**Internal suite:** 32 of 36 testable cases at provable lower bound
+(89%). After the diagnostic cleanup (see
+[09_diagnostic_cleanup.md](docs/reports/09_diagnostic_cleanup.md)),
+the remaining 4 split into:
+- 2 are *strongly suspected* at-true-LB but not formally proven:
+  D7 (no rotation — MIP at 300s found only 4p/4u) and C2 (BR-lite —
+  MIP at 300s found 3p/4u, improved from 3p/7u at 35s). Both would
+  need much longer MIP budgets or stronger CP-SAT formulation to
+  formally close.
+- 2 (well, 3) exceed our MIP threshold and need bigger compute or
+  different algorithms (F2 N=120, F12 N=72, C4 N=80).
+- (F1 N=53 is at LB=1 by volume — unimprovable.)
+
+D3 and D8 were formally MIP-proven at-true-LB during the cleanup pass.
 
 **BR1-7 (academic benchmark):** beats the 1995 baseline on every set,
 matches the 2000 baseline on BR7 (the hardest set). Gap to BRKGA-2013
@@ -221,17 +228,20 @@ In order of (effort, expected value):
 
 ### Small, well-defined work
 
-- **D8 cleanup**: D8 (+2 gap) was reclassified as at-true-LB by the MIP
-  diagnostic. Update `failure_cases.py` and `LB_REPORT.md` to reflect
-  this. ~1 hour.
-- **MIP for D3, D7**: These are constraint-bound at true LB under
-  `support_ratio=1.0` / no-rotation. The diagnostic could prove
-  this formally with a short MIP run, removing them from the "open"
-  list. ~half a day.
-- **C2 with longer MIP budget**: With 60s+ budget, MIP may converge
-  to OPTIMAL on C2 (N=40). Currently FEASIBLE 3p/7u in 35s. If it
-  proves either 3p/0u feasible or 4p is the true LB, we have closure
-  either way. ~half a day.
+- ~~**D8 cleanup**~~ — done. D8 reclassified to `expected_pallets=6`
+  in `benchmarks/internal.py` with MIP-proof citation.
+- ~~**MIP for D3**~~ — done. MIP @ 300s returned OPTIMAL 4p/2u →
+  formally proves 5p is the true LB. Reclassified to
+  `expected_pallets=5`.
+- **MIP for D7 (not formally closed)**. MIP @ 300s returned FEASIBLE
+  4p/4u without proving either way. Strongly suspected at 5p but
+  needs hours-scale MIP or better formulation to formalize.
+- **C2 (not formally closed)**. MIP @ 300s improved to FEASIBLE
+  3p/4u (vs 3p/7u @ 35s) but still didn't prove 3p/0u feasible nor
+  4p as true LB. Strongly suspected at 4p; same blocker as D7.
+
+The realistic-closeable algorithmic gap is now 2 cases (D7, C2);
+both wait on more solver time or formulation work.
 
 ### Medium, real-impact work
 

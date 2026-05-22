@@ -16,7 +16,7 @@ CP-SAT, and the next decision is strategic (see `NEXT_STEPS.md`).
 
 | Benchmark                             | Result                                         |
 |---------------------------------------|------------------------------------------------|
-| Internal 41-case suite                | **30 / 36** testable cases at provable LB (83%) |
+| Internal 41-case suite                | **32 / 36** testable cases at provable LB (89%) |
 | BR1 (Bischoff–Ratcliff 3 SKUs)        | **85.1%** mean util — above 1995 baseline       |
 | BR3 (8 SKUs)                          | **82.2%** mean util — above 1995 baseline       |
 | BR5 (12 SKUs)                         | **80.8%** mean util — above 1995 baseline       |
@@ -24,9 +24,11 @@ CP-SAT, and the next decision is strategic (see `NEXT_STEPS.md`).
 | Validator errors across all configs   | **0**                                           |
 | Regressions vs v1 baseline            | **0**                                           |
 
-The 6 remaining "open" internal cases are either constraint-bound (D3, D7),
-already at the true LB by definition (F1), or beyond current MIP capability
-(F2 N=120, F12 N=72, C4 N=80).
+Of the 4 remaining "open" internal cases, 2 are strongly suspected at-true-LB
+(D7, C2 — MIP at 300s couldn't formally close them but found no
+target-pallet solution either) and the other 3 are beyond current MIP capability
+(F2 N=120, F12 N=72, C4 N=80). F1 is at LB=1 by volume — unimprovable.
+See [docs/reports/09_diagnostic_cleanup.md](docs/reports/09_diagnostic_cleanup.md).
 
 ---
 
@@ -68,6 +70,7 @@ docs/reports/          Historical research reports — the journey.
   06_quality_roadmap.md      Q1-Q7 sequenced improvements.
   07_evaluation.md           Canonical per-case evaluation + MIP discovery.
   08_br_deep_eval.md         BR1-7 deep evaluation (86 instances).
+  09_diagnostic_cleanup.md   Post-cleanup: D3/D8 formally proven at LB.
 
 results/               Re-run artifacts (gitignored).
   checkpoints/         JSON eval checkpoints.

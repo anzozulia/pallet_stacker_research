@@ -229,7 +229,10 @@ def cases() -> List[Case]:
     out.append(Case(
         name="C2 BR-lite (5 SKU × 8)",
         boxes=bischoff_ratcliff_lite(8), pallet=PALLET,
-        notes="40 boxes across 5 sizes; Bischoff-Ratcliff style."))
+        notes="40 boxes across 5 sizes; Bischoff-Ratcliff style. MIP at "
+              "300s improved on the earlier 35s result (3p/7u → 3p/4u) but "
+              "still couldn't prove 3p/0u feasible nor 4p as true LB. "
+              "Strongly suspected at-true-LB-of-4."))
 
     out.append(Case(
         name="C3 Pareto-distributed 30",
@@ -265,7 +268,11 @@ def cases() -> List[Case]:
         name="D3 + support_ratio=1.0 (no overhang)",
         boxes=base_boxes, pallet=PALLET,
         config=PackerConfig(support_ratio=1.0, multi_start_trials=25),
-        notes="Strict: each box's full base must rest on something."))
+        expected_pallets=5, expected_unpacked=0,
+        notes="Strict: each box's full base must rest on something. "
+              "MIP-proven (300s, OPTIMAL): a 4-pallet packing exists but "
+              "fits at most 43/45 items under support_ratio=1.0. All 45 "
+              "require 5 pallets. The default volume LB of 4 is loose."))
 
     out.append(Case(
         name="D4 + binding weight limit",
@@ -294,7 +301,10 @@ def cases() -> List[Case]:
                    weight=b.weight, allowed_rotations=NO_ROTATION,
                    max_load_on_top=b.max_load_on_top) for b in base_boxes],
         pallet=PALLET, config=PackerConfig(multi_start_trials=25),
-        notes="Single orientation; most restrictive."))
+        notes="Single orientation; most restrictive. MIP at 300s found only "
+              "4p/4u (vs v1's 5p/0u) — couldn't prove 4p/0u exists nor that "
+              "5p is necessary. Strongly suspected constraint-bound at 5p; "
+              "would need hours of MIP to formalize."))
 
     out.append(Case(
         name="D8 + fragile B boxes",
@@ -303,7 +313,10 @@ def cases() -> List[Case]:
                    max_load_on_top=(0 if b.id.startswith("B") else b.max_load_on_top))
                for b in base_boxes],
         pallet=PALLET, config=PackerConfig(multi_start_trials=25),
-        notes="15 fragile boxes must end up unstacked (top of column)."))
+        expected_pallets=6, expected_unpacked=0,
+        notes="15 fragile boxes can't be stacked; volume LB of 4 is loose "
+              "under fragility. MIP-proven: 5 pallets fit at most 39/45; "
+              "all 45 require 6 pallets. 6p IS the true LB."))
 
     # E. Pathological -------------------------------------------------------
     out.append(Case(

@@ -70,7 +70,7 @@ def diagnose(case_name: str, case_cfg: PackerConfig, boxes, pallet,
     mip_result = _mip_polish(
         boxes, pallet, cfg,
         time_limit_s=time_limit_s,
-        num_workers=4,
+        num_workers=1,
         max_pallets=target_pallets,
         warm_start=warm,
     )
