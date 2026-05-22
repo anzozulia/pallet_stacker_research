@@ -61,7 +61,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from pallet_packer import Box, Pallet, PackerConfig, Rotation
+from .models import Box, Pallet, PackerConfig, Rotation
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +389,7 @@ if __name__ == "__main__":  # pragma: no cover
     print("Single too-big box:", compute_lower_bounds(too_big, Pallet(120, 100, 100)))
 
     # Test 4: overhang case → LB=1.
-    from pallet_packer import THIS_SIDE_UP
+    from .models import THIS_SIDE_UP
     overhang_pallet = Pallet(120, 100, 100, max_weight=200, max_overhang=20)
     overhang_cfg = PackerConfig(allow_pallet_overhang=True)
     overhang_boxes = [Box(id=f"O{i}", length=70, width=60, height=100, weight=4,

@@ -12,7 +12,10 @@ Output is plain text plus a LB_REPORT.md summary at the end.
 """
 from __future__ import annotations
 
+import os
 import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import time
 from dataclasses import dataclass
 from typing import List, Optional
@@ -20,9 +23,9 @@ from typing import List, Optional
 from pallet_packer import (
     Box, Pallet, PalletPacker, PackerConfig, PackResult, validate,
 )
-from lower_bounds import compute_lower_bounds, LBReport
-import benchmark
-import failure_cases
+from pallet_packer.lower_bounds import compute_lower_bounds, LBReport
+from benchmarks import internal as benchmark
+from benchmarks import failure_cases
 
 
 # ---------------------------------------------------------------------------
@@ -323,8 +326,8 @@ def main() -> int:
         print(f"  [{i:>2}/{len(rows)}] {r.name}…", file=sys.stderr, flush=True)
         execute(r)
     print_table(rows)
-    write_report(rows, "LB_REPORT.md")
-    print("\nWrote LB_REPORT.md", file=sys.stderr)
+    write_report(rows, "results/LB_REPORT.md")
+    print("\nWrote results/LB_REPORT.md", file=sys.stderr)
     return 0
 
 

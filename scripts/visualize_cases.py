@@ -1,6 +1,10 @@
 """
-visualize_cases.py - Render representative benchmark cases as a multi-panel figure.
+visualize_cases.py — Render representative benchmark cases as a multi-panel figure.
 """
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import matplotlib.colors as mcolors
@@ -9,7 +13,7 @@ from pallet_packer import (
     Box, Pallet, PalletPacker, PackerConfig,
     ALL_ROTATIONS, THIS_SIDE_UP,
 )
-from benchmark import (
+from benchmarks.internal import (
     mixed_classic, bischoff_ratcliff_lite, pareto_distribution_boxes,
 )
 

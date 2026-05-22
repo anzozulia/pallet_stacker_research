@@ -19,11 +19,13 @@ Outputs:
 """
 from __future__ import annotations
 
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import argparse
 import json
-import os
 import statistics
-import sys
 import time
 from dataclasses import asdict, dataclass
 from typing import Dict, List, Optional, Tuple
@@ -31,9 +33,9 @@ from typing import Dict, List, Optional, Tuple
 from pallet_packer import (
     Box, Pallet, PalletPacker, PackerConfig, validate,
 )
-import benchmark
-import failure_cases
-from lower_bounds import compute_lower_bounds
+from pallet_packer.lower_bounds import compute_lower_bounds
+from benchmarks import internal as benchmark
+from benchmarks import failure_cases
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +180,7 @@ def save(path: str, data: dict) -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     argv = argv or []
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="evaluation_results.json")
+    ap.add_argument("--out", default="results/checkpoints/evaluation_results.json")
     ap.add_argument("--time-cap", type=float, default=35,
                     help="Approximate wall-clock cap per session.")
     ap.add_argument("--skip-huge", type=int, default=120,

@@ -20,17 +20,19 @@ Output:
 """
 from __future__ import annotations
 
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import argparse
 import json
-import os
 import statistics
-import sys
 import time
 from dataclasses import asdict, dataclass
 from typing import Dict, List, Optional
 
 from pallet_packer import PackerConfig, PalletPacker, validate
-from br_benchmark import parse_thpack, first_pallet_utilization
+from benchmarks.br import parse_thpack, first_pallet_utilization
 
 
 def v1_config(seed: int = 42) -> PackerConfig:
@@ -121,10 +123,10 @@ def save(path: str, data: dict) -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     argv = argv or []
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dir", default="br_data")
+    ap.add_argument("--data-dir", default="benchmarks/data")
     ap.add_argument("--sets", nargs="+",
                     default=["thpack1", "thpack3", "thpack5", "thpack7"])
-    ap.add_argument("--out", default="br_deep_results.json")
+    ap.add_argument("--out", default="results/checkpoints/br_deep_results.json")
     ap.add_argument("--max-time", type=float, default=35.0,
                     help="Approx wall-clock cap per session in seconds.")
     ap.add_argument("--skip-huge-n", type=int, default=250,

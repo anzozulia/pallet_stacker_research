@@ -1,281 +1,45 @@
 """
-pallet_packer.py
-=================
-3D bin packing / pallet loading with realistic physical constraints.
+pallet_packer.packer — the core algorithm.
 
-Algorithm
----------
-- Extreme-Point placement heuristic (Crainic, Perboli & Tadei, INFORMS JoC 2008)
-- Pluggable constraint stack: support / no-floating, weight limit, CoG envelope,
-  restricted rotations, overhang, fragility / load-bearing, stacking compatibility.
-- Multi-start randomized search (BRKGA-lite) for quality improvement.
-- First-Fit-Decreasing across pallets to minimize pallet count.
+Contains:
+  - PalletState: per-pallet engine with extreme-point placement, the full
+    constraint stack (geometry, support, weight, CoG, fragility, rotation,
+    overhang), and the GRASP-aware try_place primitive.
+  - PackResult: the multi-pallet packing result returned from pack().
+  - PalletPacker: the top-level orchestrator. Runs multi-start search,
+    BRKGA, block-building, layer-building, ejection chains, MIP polish, and
+    the safety-net candidate generation. Final answer is min(candidates)
+    under the configured quality function.
 
-References
-----------
-- Crainic, T.G., Perboli, G. & Tadei, R. (2008). Extreme Point-Based Heuristics
-  for Three-Dimensional Bin Packing. INFORMS J. Computing 20(3), 368-384.
-- Junqueira, L., Morabito, R. & Yamashita, D.S. (2012). Three-dimensional
-  container loading models with cargo stability and load bearing constraints.
-  Computers & Operations Research 39(1), 74-85.
-- Bischoff, E.E. (2006). Three-dimensional packing of items with limited load
-  bearing strength. EJOR 168(3), 952-966.
-- Ramos, A.G., Silva, E. & Oliveira, J.F. (2018). A new load balance methodology
-  for container loading problem in road transportation. EJOR 266(3), 1140-1152.
-- Gonçalves, J.F. & Resende, M.G.C. (2013). A biased random key genetic
-  algorithm for 2D and 3D bin packing problems. IJPE 145, 500-510.
+References live in the original module docstring; key ones:
+  - Crainic, Perboli & Tadei 2008 (extreme points)
+  - Gonçalves & Resende 2013 (BRKGA)
+  - Bischoff & Ratcliff 1995 (layer building)
+  - Eley 2002 / Bortfeldt 2000 (block building)
+  - do Nascimento, Queiroz & Junqueira 2021 (MIP polish)
 """
 from __future__ import annotations
 
-import json
 import random
 import time
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Callable, List, Optional, Tuple
 
-EPS = 1e-6
+from .models import (
+    EPS,
+    Box,
+    Pallet,
+    Placement,
+    PackerConfig,
+    Rotation,
+    ALL_ROTATIONS,
+    THIS_SIDE_UP,
+    NO_ROTATION,
+)
 
 
 # ---------------------------------------------------------------------------
-# Rotations
-# ---------------------------------------------------------------------------
-class Rotation(Enum):
-    """Six axis-aligned orientations.
-
-    Each value is a permutation (a, b, c) of (0, 1, 2) meaning:
-        new dx = original_dim[a]
-        new dy = original_dim[b]
-        new dz = original_dim[c]
-    where original_dim = (length, width, height).
-
-    So LWH = (0, 1, 2) is identity: L -> X, W -> Y, H -> Z.
-    """
-    LWH = (0, 1, 2)  # default upright
-    WLH = (1, 0, 2)  # rotated 90 deg around Z (still upright)
-    LHW = (0, 2, 1)  # tipped: W is now up
-    HWL = (2, 1, 0)  # tipped: L is now up
-    WHL = (1, 2, 0)
-    HLW = (2, 0, 1)
-
-
-ALL_ROTATIONS: List[Rotation] = list(Rotation)
-THIS_SIDE_UP: List[Rotation] = [Rotation.LWH, Rotation.WLH]  # H stays vertical
-NO_ROTATION: List[Rotation] = [Rotation.LWH]
-
-
-# ---------------------------------------------------------------------------
-# Data models
-# ---------------------------------------------------------------------------
-@dataclass
-class Box:
-    id: str
-    length: float  # original X-extent
-    width: float   # original Y-extent
-    height: float  # original Z-extent
-    weight: float = 0.0
-    # Max weight (kg) this box can bear on its current top face.
-    # Use 0 for "nothing may be placed on top" (fragile).
-    max_load_on_top: float = float("inf")
-    allowed_rotations: List[Rotation] = field(
-        default_factory=lambda: list(ALL_ROTATIONS)
-    )
-    # Optional fixed group: boxes in the same group must end up on the same pallet.
-    group: Optional[str] = None
-    # If True, the box must rest on a 100% supported surface (no partial overhang).
-    # Used internally for super-blocks formed by block-building so that internal
-    # decomposition stays valid.
-    requires_full_support: bool = False
-
-    def dims_for(self, rotation: Rotation) -> Tuple[float, float, float]:
-        """Return (dx, dy, dz) when oriented according to `rotation`."""
-        original = (self.length, self.width, self.height)
-        a, b, c = rotation.value
-        return original[a], original[b], original[c]
-
-    @property
-    def volume(self) -> float:
-        return self.length * self.width * self.height
-
-
-@dataclass
-class Pallet:
-    length: float                # X extent
-    width: float                 # Y extent
-    height: float                # Z extent (max stack height)
-    max_weight: float = float("inf")
-    # Allow box footprints to extend this far beyond pallet edges (mm).
-    max_overhang: float = 0.0
-    # Pallet CoG envelope: the (x, y) of the pallet's CoG must remain inside
-    # [cx_min, cx_max] x [cy_min, cy_max]. Defaults to centred +/- 25% box.
-    cog_x_range: Optional[Tuple[float, float]] = None
-    cog_y_range: Optional[Tuple[float, float]] = None
-
-
-@dataclass
-class Placement:
-    box: Box
-    rotation: Rotation
-    x: float
-    y: float
-    z: float
-
-    @property
-    def dims(self) -> Tuple[float, float, float]:
-        return self.box.dims_for(self.rotation)
-
-    @property
-    def dx(self) -> float: return self.dims[0]
-    @property
-    def dy(self) -> float: return self.dims[1]
-    @property
-    def dz(self) -> float: return self.dims[2]
-    @property
-    def x2(self) -> float: return self.x + self.dx
-    @property
-    def y2(self) -> float: return self.y + self.dy
-    @property
-    def z2(self) -> float: return self.z + self.dz
-
-    def overlaps(self, other: "Placement") -> bool:
-        return (self.x + EPS < other.x2 and self.x2 > other.x + EPS and
-                self.y + EPS < other.y2 and self.y2 > other.y + EPS and
-                self.z + EPS < other.z2 and self.z2 > other.z + EPS)
-
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-@dataclass
-class PackerConfig:
-    # Stability: fraction of base area that must rest on supporting items or floor.
-    # 1.0 = full support / no overhang at all. 0.75 is a common default
-    # (matches `py3dbp.support_surface_ratio`).
-    support_ratio: float = 0.8
-    # Reject placements whose footprint centroid is not over a supporting item.
-    require_centroid_supported: bool = True
-    # Allow boxes to extend beyond pallet edges (separate from support_ratio,
-    # which is about inter-box support). 0 means no overhang of pallet edges.
-    allow_pallet_overhang: bool = False
-    # Heavier on bottom: when sorting boxes, prefer heavier first.
-    heavy_on_bottom: bool = True
-    # Pallet CoG envelope (fraction of pallet length/width from centre).
-    # 0.25 means the pallet CoG must stay within +/- 25% of centre.
-    cog_envelope_fraction: float = 0.25
-    # CoG check only kicks in once the pallet is at least this fraction loaded
-    # (by weight). With an early/empty pallet, the CoG is naturally off-centre
-    # and the check would reject every first box. Set to 0 to always enforce.
-    cog_check_min_load_fraction: float = 0.35
-    # Load-bearing: enforce that no box's max_load_on_top is exceeded by what
-    # ends up resting (recursively) on top of it.
-    enforce_load_bearing: bool = True
-    # Number of multi-start trials (random seeds) for the metaheuristic.
-    multi_start_trials: int = 20
-    # Random seed for reproducibility.
-    seed: Optional[int] = 42
-
-    # ---- v2 improvements (opt-in) -----------------------------------------
-    # Block-building preprocessor (Eley 2002, Bortfeldt 2000): identify
-    # identical SKUs with ≥ block_threshold units and pack them as solid
-    # rectangular blocks (n_x × n_y × n_z grids).
-    use_block_building: bool = False
-    block_threshold: int = 4
-    # True BRKGA replacement for the multi-start sweep (Gonçalves & Resende
-    # 2013). Maintains a population of chromosomes, applies elite-biased
-    # crossover each generation. Set use_brkga=True to enable.
-    use_brkga: bool = False
-    brkga_population_size: int = 30
-    brkga_generations: int = 8
-    brkga_elite_fraction: float = 0.20
-    brkga_mutant_fraction: float = 0.15
-    brkga_p_elite: float = 0.70
-    # Cap on N above which BRKGA falls back to multi-start. The original v2
-    # cutoff of 40 was conservative — BRKGA was given a deterministic decoder
-    # and couldn't escape the same local optimum on larger instances. With
-    # GRASP randomization (grasp_alpha > 1) the decoder is now non-deterministic
-    # so BRKGA can usefully explore at higher N. Set to None to disable the
-    # fallback entirely.
-    brkga_n_threshold: Optional[int] = 200
-
-    # ---- Phase 2 improvements (opt-in) -----------------------------------
-    # SKU-consistent rotation pre-decision (Bortfeldt-Gehring 2001).
-    # For each SKU with multiple units, score each allowed rotation by the
-    # number of boxes that fit per pallet layer; lock in the winner before
-    # search. Cuts search space, helps cases where mixed-rotation packings
-    # would fragment a structured layout.
-    sku_consistent_rotation: bool = False
-    # GRASP randomization in placement (Parreño et al. 2008). Within a
-    # placement step, pick uniformly among the top-`grasp_alpha` best
-    # candidates instead of always taking the single best. Provides BRKGA
-    # / multi-start with real per-decoder variation. 1 = current behavior.
-    grasp_alpha: int = 1
-    # Ejection chains (Crainic-Perboli-Tadei 2009 + Faroe-Pisinger-Zachariasen
-    # 2003). After greedy packing, displace one or more placed items, try to
-    # fit currently-unpacked items, then re-place the displaced items.
-    # Iterate until no improvement or budget exhausted.
-    use_ejection_chains: bool = False
-    ejection_max_depth: int = 2          # number of items to remove in one chain
-    ejection_max_iters: int = 200         # outer loop budget
-    # Safety net: when GRASP / BRKGA randomization is enabled, also run
-    # deterministic equivalents (multi_start, deterministic-BRKGA on
-    # original boxes, block-building-without-GRASP) and pick the best
-    # across all candidates. This guarantees Phase 2 features can only
-    # add value, never destroy a v1- or v2-baseline win. Disable for
-    # benchmarking when you want to measure raw Phase 2 contribution.
-    use_safety_net: bool = True
-    # Cap on the number of pallets the packer is allowed to open. When set
-    # to 1, this turns the multi-pallet packer into a single-container
-    # max-utilization packer (the Bischoff-Ratcliff objective). Items that
-    # don't fit on the capped set of pallets end up in `result.unpacked`.
-    # Default None = unlimited (the original multi-pallet behavior).
-    max_pallets: Optional[int] = None
-    # Candidate-selection metric. Controls how the candidate set's
-    # min(quality) picks between competing packings. Options:
-    #   "min_unpacked"   — (unpacked, pallets, -util_overall). Default.
-    #                      Best for multi-pallet logistics: pack
-    #                      everything first, then minimize pallet count.
-    #   "max_util"       — (-util_overall, unpacked, pallets). Best for
-    #                      single-container max-utilization (the BR
-    #                      objective). Prioritizes density on the
-    #                      assigned pallet(s) over fitting all items.
-    optimize: str = "min_unpacked"
-    # Phase 2e — layer-building decoder (George-Robinson 1980;
-    # Bischoff-Ratcliff 1995). Builds horizontal layer-slabs along the
-    # container's longest axis. Each layer's depth is set by a seed item;
-    # the slab is filled by recursively packing on a virtual sub-pallet.
-    # Produces qualitatively different packings than extreme-point —
-    # especially on heterogeneous mixes (BR1-7, F13).
-    use_layer_building: bool = False
-    # Which axis to layer along ('x' = pallet length, 'y' = width,
-    # 'z' = height, or 'all' = try all three).
-    # Default 'all' tries every orientation (with 2 seed strategies per
-    # axis = 6 candidate packings) and picks the best — cheap because
-    # each layer-decoder is one decode, ~milliseconds at small N.
-    layer_axis: str = "all"
-    # Phase 4 — MIP polish (do Nascimento-Queiroz-Junqueira 2021, OR-Tools
-    # CP-SAT). Solve the 3D-BPP exactly (or best-within-budget) for small
-    # sub-problems. Provides a "provably optimal-or-close" candidate
-    # alongside the heuristics.
-    use_mip_polish: bool = False
-    # Maximum N for which to attempt the MIP. With Q2 (quantitative
-    # support) + Q3 (warm-starting from heuristic), CP-SAT can converge
-    # to OPTIMAL on N=45 in ~15s and to FEASIBLE-better-than-v1 on
-    # N=40 in 30s. The default 50 is calibrated for this regime; below
-    # 50, MIP almost always converges to a useful solution within
-    # mip_time_limit_s.
-    mip_n_threshold: int = 50
-    # Wall-clock budget for the CP-SAT solve in seconds.
-    mip_time_limit_s: float = 30.0
-    # CP-SAT parallel workers. 1 = single-threaded — empirically much
-    # faster on our model (the parallel modes seem to interfere with the
-    # warm-start hint, possibly because each worker re-explores from
-    # scratch). On C1 (N=45) at default time-limit: 1 worker reaches
-    # OPTIMAL in 12s; 4 workers don't converge in 30s.
-    mip_num_workers: int = 1
-
-
-# ---------------------------------------------------------------------------
-# Pallet state and packing logic
+# Per-pallet state and packing logic
 # ---------------------------------------------------------------------------
 class PalletState:
     """State of one pallet during packing."""
@@ -2395,177 +2159,3 @@ class PalletPacker:
         assert best_result is not None
         return best_result
 
-    # -------- single trial -----------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# JSON output
-# ---------------------------------------------------------------------------
-def to_json(result: PackResult, pallet: Pallet) -> dict:
-    """Serialize a PackResult to the JSON schema agreed in the design report."""
-    pallets_out = []
-    for st in result.pallets:
-        # Identify supporters for each placement (for downstream visualisers).
-        items_out = []
-        for p in st.placements:
-            sups = st._supporters_of(p)
-            supported_by = [s.box.id for s, _ in sups] if sups else ["floor"]
-            supports = [
-                q.box.id for q in st.placements
-                if any(abs(q.z - p.z2) < EPS and
-                       max(0, min(q.x2, p.x2) - max(q.x, p.x)) *
-                       max(0, min(q.y2, p.y2) - max(q.y, p.y)) > EPS
-                       for _ in [None])
-            ]
-            footprint = p.dx * p.dy
-            support_ratio = (
-                sum(a for _, a in sups) / footprint
-                if footprint > 0 and p.z > EPS else 1.0
-            )
-            items_out.append({
-                "item_id": p.box.id,
-                "position": {"x": round(p.x, 3),
-                             "y": round(p.y, 3),
-                             "z": round(p.z, 3)},
-                "dimensions": {"L": round(p.dx, 3),
-                               "W": round(p.dy, 3),
-                               "H": round(p.dz, 3)},
-                "orientation": {"perm": list(p.rotation.value),
-                                "name": p.rotation.name},
-                "weight": p.box.weight,
-                "support_ratio": round(support_ratio, 4),
-                "supported_by": supported_by,
-                "supports": supports,
-            })
-        # Pallet CoG.
-        if st.total_weight > 0:
-            cx = sum(p.box.weight * (p.x + p.dx / 2.0) for p in st.placements) / st.total_weight
-            cy = sum(p.box.weight * (p.y + p.dy / 2.0) for p in st.placements) / st.total_weight
-            cz = sum(p.box.weight * (p.z + p.dz / 2.0) for p in st.placements) / st.total_weight
-        else:
-            cx = cy = cz = 0.0
-        used_volume = sum(p.box.volume for p in st.placements)
-        capacity = pallet.length * pallet.width * pallet.height
-        pallets_out.append({
-            "pallet_id": st.pallet_id,
-            "dimensions": {"L": pallet.length, "W": pallet.width,
-                           "H": pallet.height, "max_weight": pallet.max_weight},
-            "utilisation": round(used_volume / capacity if capacity > 0 else 0.0, 4),
-            "cog": {"x": round(cx, 3), "y": round(cy, 3), "z": round(cz, 3)},
-            "total_weight": round(st.total_weight, 3),
-            "items": items_out,
-        })
-    return {
-        "input_summary": {
-            "items_packed": sum(len(p["items"]) for p in pallets_out),
-            "items_unpacked": len(result.unpacked),
-            "pallets_used": result.num_pallets,
-            "total_volume_utilisation": round(result.total_volume_utilisation, 4),
-        },
-        "pallets": pallets_out,
-        "unpacked_items": [
-            {"item_id": b.id,
-             "dimensions": {"L": b.length, "W": b.width, "H": b.height},
-             "weight": b.weight,
-             "reason": "no_feasible_placement"}
-            for b in result.unpacked
-        ],
-    }
-
-
-def save_json(result: PackResult, pallet: Pallet, path: str) -> None:
-    with open(path, "w") as f:
-        json.dump(to_json(result, pallet), f, indent=2)
-
-
-# ---------------------------------------------------------------------------
-# Validator: independent sanity check of a packing result
-# ---------------------------------------------------------------------------
-def validate(result: PackResult, pallet: Pallet,
-             config: Optional[PackerConfig] = None) -> List[str]:
-    """Return a list of constraint violations (empty list means all good).
-
-    Re-checks the produced packing against geometry, weight, support, and
-    rotation constraints — independent of the placement engine, so any bug
-    in the engine should produce a non-empty list here.
-    """
-    cfg = config or PackerConfig()
-    errors: List[str] = []
-    for st in result.pallets:
-        # 1. Pallet boundaries
-        for p in st.placements:
-            ov = pallet.max_overhang if cfg.allow_pallet_overhang else 0.0
-            if (p.x < -EPS or p.y < -EPS or p.z < -EPS or
-                    p.x2 > pallet.length + ov + EPS or
-                    p.y2 > pallet.width + ov + EPS or
-                    p.z2 > pallet.height + EPS):
-                errors.append(
-                    f"{st.pallet_id}: {p.box.id} outside pallet bounds "
-                    f"at ({p.x},{p.y},{p.z})+({p.dx},{p.dy},{p.dz})"
-                )
-        # 2. No pairwise overlap
-        for i, a in enumerate(st.placements):
-            for b in st.placements[i + 1:]:
-                if a.overlaps(b):
-                    errors.append(
-                        f"{st.pallet_id}: {a.box.id} overlaps {b.box.id}"
-                    )
-        # 3. Weight budget
-        total = sum(p.box.weight for p in st.placements)
-        if total > pallet.max_weight + EPS:
-            errors.append(
-                f"{st.pallet_id}: total weight {total} > limit {pallet.max_weight}"
-            )
-        # 4. Support / no-floating
-        for p in st.placements:
-            if p.z <= EPS:
-                continue
-            footprint = p.dx * p.dy
-            supported = 0.0
-            for q in st.placements:
-                if q is p:
-                    continue
-                if abs(p.z - q.z2) > EPS:
-                    continue
-                ox = max(0.0, min(p.x2, q.x2) - max(p.x, q.x))
-                oy = max(0.0, min(p.y2, q.y2) - max(p.y, q.y))
-                supported += ox * oy
-            if footprint > 0 and supported / footprint < cfg.support_ratio - EPS:
-                errors.append(
-                    f"{st.pallet_id}: {p.box.id} is floating "
-                    f"(support ratio {supported / footprint:.2f} < {cfg.support_ratio})"
-                )
-        # 5. Rotation allowed
-        for p in st.placements:
-            if p.rotation not in p.box.allowed_rotations:
-                errors.append(
-                    f"{st.pallet_id}: {p.box.id} uses disallowed rotation "
-                    f"{p.rotation.name}"
-                )
-        # 6. Load bearing (per direct supporter, weighted by contact area)
-        if cfg.enforce_load_bearing:
-            load_on: dict = {id(p): 0.0 for p in st.placements}
-            for placed in st.placements:
-                sups = []
-                for q in st.placements:
-                    if q is placed:
-                        continue
-                    if abs(placed.z - q.z2) > EPS:
-                        continue
-                    ox = max(0.0, min(placed.x2, q.x2) - max(placed.x, q.x))
-                    oy = max(0.0, min(placed.y2, q.y2) - max(placed.y, q.y))
-                    if ox * oy > EPS:
-                        sups.append((q, ox * oy))
-                sup_area = sum(a for _, a in sups)
-                if sup_area <= 0:
-                    continue
-                for q, a in sups:
-                    load_on[id(q)] += placed.box.weight * (a / sup_area)
-            for q in st.placements:
-                if load_on[id(q)] > q.box.max_load_on_top + EPS:
-                    errors.append(
-                        f"{st.pallet_id}: {q.box.id} carries "
-                        f"{load_on[id(q)]:.2f} kg > max_load_on_top "
-                        f"{q.box.max_load_on_top}"
-                    )
-    return errors

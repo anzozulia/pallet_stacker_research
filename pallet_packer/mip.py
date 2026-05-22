@@ -54,9 +54,8 @@ except ImportError:  # pragma: no cover
     _CP_SAT_AVAILABLE = False
     cp_model = None  # type: ignore
 
-from pallet_packer import (
-    Box, Pallet, PackerConfig, PackResult, PalletState, Placement, Rotation,
-)
+from .models import Box, Pallet, PackerConfig, Placement, Rotation
+from .packer import PackResult, PalletState
 
 
 def _int(v: float) -> int:

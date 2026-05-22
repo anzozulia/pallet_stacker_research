@@ -1,4 +1,12 @@
 __pycache__/
 *.pyc
+*.pyo
 .DS_Store
-COMMIT_MESSAGE_*.txt
+.venv/
+.idea/
+.vscode/
+
+# Ad-hoc report outputs from re-running scripts. The canonical reports
+# live in docs/reports/. JSON checkpoints and galleries in results/ are
+# tracked (research record).
+results/*.md

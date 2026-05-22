@@ -1,7 +1,7 @@
 """
-br_benchmark.py — Bischoff-Ratcliff BR1-BR7 benchmark harness.
+benchmarks.br — Bischoff-Ratcliff BR1-BR7 benchmark harness.
 
-Reads thpack*.txt files from `br_data/`, decodes them into Box/Pallet objects,
+Reads thpack*.txt files from `benchmarks/data/`, decodes them into Box/Pallet objects,
 runs the packer in pure-geometric mode (no weight/fragility/CoG/load-bearing —
 the published benchmarks don't include those constraints), and reports mean
 volume utilization across instances.
@@ -341,13 +341,13 @@ def write_report(
 # ---------------------------------------------------------------------------
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--data-dir", default="br_data",
+    p.add_argument("--data-dir", default="benchmarks/data",
                    help="Directory containing thpack*.txt files.")
     p.add_argument("--sample", type=int, default=10,
                    help="Number of instances per set to run.")
     p.add_argument("--sets", nargs="+", default=["thpack1", "thpack3", "thpack5"],
                    help="Which thpack files (basename, no extension) to run.")
-    p.add_argument("--out", default="BR_REPORT.md")
+    p.add_argument("--out", default="docs/reports/04_br_baseline.md")
     p.add_argument("--skip-v2", action="store_true",
                    help="Skip v2 run (saves runtime; v2 is slower).")
     args = p.parse_args(argv)

@@ -13,9 +13,11 @@ Usage:
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import json
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -23,8 +25,8 @@ from typing import Dict, List, Optional, Tuple
 from pallet_packer import (
     Box, Pallet, PalletPacker, PackerConfig, validate,
 )
-import benchmark
-import failure_cases
+from benchmarks import internal as benchmark
+from benchmarks import failure_cases
 
 
 def make_configs(ablation: bool = False) -> Dict[str, PackerConfig]:
@@ -178,7 +180,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     argv = argv or []
     full = "--full" in argv
     ablation = "--ablation" in argv
-    out_path = "phase2_results.json"
+    out_path = "results/checkpoints/phase2_results.json"
     if "--out" in argv:
         out_path = argv[argv.index("--out") + 1]
 

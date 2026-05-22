@@ -1,12 +1,16 @@
 """
-visualize_failures.py - Render the three confirmed-failure cases side by side.
+visualize_failures.py — Render the three confirmed-failure cases side by side.
 """
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import matplotlib.colors as mcolors
 
 from pallet_packer import PalletPacker
-from failure_cases import (
+from benchmarks.failure_cases import (
     case_F1_pareto_continuum,
     case_F3_interlock_pattern,
     case_F12_strongly_heterogeneous_at_scale,

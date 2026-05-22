@@ -1,10 +1,14 @@
 """
-example.py - Demonstration of pallet_packer.py on the user's scenario:
+example.py — Demonstration of the pallet_packer package on the user's scenario:
   - 20 boxes of 30 x 40 x 70
   - 15 boxes of 40 x 45 x 50
   - 10 boxes of 60 x 60 x 30
   - Pallet: 120 x 100 x 100
 """
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from pallet_packer import (
     Box, Pallet, PalletPacker, PackerConfig,
     ALL_ROTATIONS, THIS_SIDE_UP, NO_ROTATION,

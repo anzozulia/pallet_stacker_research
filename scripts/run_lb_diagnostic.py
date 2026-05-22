@@ -15,18 +15,21 @@ finding a solution) → inconclusive but suggests the LB might be tight.
 """
 from __future__ import annotations
 
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import argparse
 import json
-import sys
 import time
 from typing import Dict, List, Optional
 
-import benchmark
-import failure_cases
 from pallet_packer import PalletPacker, PackerConfig, validate
+from benchmarks import internal as benchmark
+from benchmarks import failure_cases
 
 try:
-    from mip_polish import mip_polish as _mip_polish
+    from pallet_packer.mip import mip_polish as _mip_polish
     _CP_SAT_AVAILABLE = True
 except ImportError:
     _CP_SAT_AVAILABLE = False
