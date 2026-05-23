@@ -157,7 +157,13 @@ class PackerConfig:
     # ends up resting (recursively) on top of it.
     enforce_load_bearing: bool = True
     # Number of multi-start trials (random seeds) for the metaheuristic.
-    multi_start_trials: int = 20
+    # The deterministic seed (heavy → volume → longest-side) hits a strong
+    # local optimum that swap-perturbation rarely improves on. Empirically
+    # (ANALYSIS.md / docs/reports/01_v1_analysis.md): trials=1 and trials=50
+    # give identical results on every instance tested + zero seed variance.
+    # Default lowered from 20 → 1 in Option B tuning (May 2026). Bump back
+    # up only if you find an instance class where it actually helps.
+    multi_start_trials: int = 1
     # Random seed for reproducibility.
     seed: Optional[int] = 42
 

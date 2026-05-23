@@ -38,6 +38,27 @@ from .models import (
 )
 
 
+def _adaptive_mip_budget(n_items: int, default_budget: float) -> float:
+    """Scale MIP time budget by problem size.
+
+    Small problems converge to OPTIMAL in well under a second; giving them
+    the full 30s default is pure waste in batch settings. Large problems
+    (near the mip_n_threshold) get the full budget. Never returns more than
+    `default_budget` — respects user overrides for hard instances.
+
+    Empirical calibration from the post-Phase-4 evaluation (with 1-worker
+    CP-SAT + warm-start):
+      N < 10  → typically <1s; 5s budget is more than enough.
+      N < 25  → typically 1-10s; 15s budget covers the long tail.
+      N ≥ 25  → use the full default budget.
+    """
+    if n_items < 10:
+        return min(5.0, default_budget)
+    if n_items < 25:
+        return min(15.0, default_budget)
+    return default_budget
+
+
 # ---------------------------------------------------------------------------
 # Per-pallet state and packing logic
 # ---------------------------------------------------------------------------
@@ -847,7 +868,7 @@ class PalletPacker:
         # MIP can't improve on that, and running it would waste budget.
         if self.config.use_mip_polish and len(boxes) <= self.config.mip_n_threshold:
             try:
-                from mip_polish import mip_polish as _mip_polish
+                from .mip import mip_polish as _mip_polish
                 # Estimate a sensible P budget from heuristic candidates,
                 # AND get the warm-start hint.
                 if candidates:
@@ -869,9 +890,11 @@ class PalletPacker:
                         warm.num_pallets <= vol_lb):
                     pass  # skip — already at LB
                 else:
+                    mip_budget = _adaptive_mip_budget(
+                        len(boxes), self.config.mip_time_limit_s)
                     mip_result = _mip_polish(
                         boxes, self.pallet, self.config,
-                        time_limit_s=self.config.mip_time_limit_s,
+                        time_limit_s=mip_budget,
                         num_workers=self.config.mip_num_workers,
                         max_pallets=P_budget,
                         warm_start=warm,
@@ -882,7 +905,7 @@ class PalletPacker:
                     if P_budget > 1 and self.config.max_pallets is None:
                         mip_aggressive = _mip_polish(
                             boxes, self.pallet, self.config,
-                            time_limit_s=self.config.mip_time_limit_s,
+                            time_limit_s=mip_budget,
                             num_workers=self.config.mip_num_workers,
                             max_pallets=P_budget - 1,
                             warm_start=warm,
@@ -997,7 +1020,7 @@ class PalletPacker:
         Returns the improved PackResult, or None.
         """
         try:
-            from mip_polish import mip_polish as _mip_polish
+            from .mip import mip_polish as _mip_polish
         except ImportError:
             return None
         if result.num_pallets < 2 or result.unpacked:
@@ -1062,7 +1085,8 @@ class PalletPacker:
 
         sub_result = _mip_polish(
             sub_boxes, self.pallet, self.config,
-            time_limit_s=self.config.mip_time_limit_s,
+            time_limit_s=_adaptive_mip_budget(
+                len(sub_boxes), self.config.mip_time_limit_s),
             num_workers=self.config.mip_num_workers,
             max_pallets=target_pallets,
             warm_start=warm,

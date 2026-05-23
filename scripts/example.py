@@ -91,8 +91,12 @@ def main():
               f"{used / cap:5.1%} utilised")
 
     # Save JSON output for the visualiser.
-    save_json(result, pallet, "packing_result.json")
-    print("\nWrote packing_result.json")
+    out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "results", "examples")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, "packing_result.json")
+    save_json(result, pallet, out_path)
+    print(f"\nWrote {out_path}")
 
     # Independent validation of all constraints.
     errors = validate(result, pallet, config)

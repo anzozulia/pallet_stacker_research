@@ -10,3 +10,4 @@ __pycache__/
 # live in docs/reports/. JSON checkpoints and galleries in results/ are
 # tracked (research record).
 results/*.md
+/packing_result.json
