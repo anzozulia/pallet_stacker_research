@@ -1,0 +1,22 @@
+BRKGA-v3 eval: pop=40, gens=40, time=30.0s/instance
+
+=== thpack3: 10 instances ===
+  [5/10] BR3 mean=81.9% elapsed=200s
+  [10/10] BR3 mean=81.5% elapsed=371s
+  BR3: n=10 mean=81.5% stdev=1.8 rt_avg=37.1s
+
+=== thpack5: 10 instances ===
+  [5/10] BR5 mean=82.1% elapsed=170s
+  [10/10] BR5 mean=81.4% elapsed=363s
+  BR5: n=10 mean=81.4% stdev=1.4 rt_avg=36.3s
+
+=== thpack7: 10 instances ===
+  [5/10] BR7 mean=81.7% elapsed=195s
+  [10/10] BR7 mean=81.0% elapsed=370s
+  BR7: n=10 mean=81.0% stdev=1.0 rt_avg=37.0s
+
+=== BRKGA-v3 Summary ===
+BR1: n= 10 mean= 83.4% stdev=3.1
+BR3: n= 10 mean= 81.5% stdev=1.8
+BR5: n= 10 mean= 81.4% stdev=1.4
+BR7: n= 10 mean= 81.0% stdev=1.0

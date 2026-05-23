@@ -1,0 +1,362 @@
+[
+ {
+  "set_id": "BR1",
+  "instance_id": 1,
+  "n_boxes": 112,
+  "util_pallet1": 0.8335283064392306,
+  "util_total": 0.8335283064392306,
+  "runtime_s": 63.086201906204224,
+  "validator_errors": 41
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 2,
+  "n_boxes": 138,
+  "util_pallet1": 0.8886820438410322,
+  "util_total": 0.8886820438410322,
+  "runtime_s": 39.868924140930176,
+  "validator_errors": 33
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 3,
+  "n_boxes": 127,
+  "util_pallet1": 0.8006269603936507,
+  "util_total": 0.8006269603936507,
+  "runtime_s": 60.31354594230652,
+  "validator_errors": 69
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 4,
+  "n_boxes": 197,
+  "util_pallet1": 0.8505998746411553,
+  "util_total": 0.8505998746411553,
+  "runtime_s": 65.57803702354431,
+  "validator_errors": 75
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 5,
+  "n_boxes": 136,
+  "util_pallet1": 0.8262107331365435,
+  "util_total": 0.8262107331365435,
+  "runtime_s": 64.91613698005676,
+  "validator_errors": 57
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 6,
+  "n_boxes": 147,
+  "util_pallet1": 0.8449518471818521,
+  "util_total": 0.8449518471818521,
+  "runtime_s": 64.60153388977051,
+  "validator_errors": 57
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 7,
+  "n_boxes": 126,
+  "util_pallet1": 0.8393592208874688,
+  "util_total": 0.8393592208874688,
+  "runtime_s": 62.704383850097656,
+  "validator_errors": 53
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 8,
+  "n_boxes": 180,
+  "util_pallet1": 0.855018109235012,
+  "util_total": 0.855018109235012,
+  "runtime_s": 60.196757793426514,
+  "validator_errors": 82
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 9,
+  "n_boxes": 101,
+  "util_pallet1": 0.7750083915981657,
+  "util_total": 0.7750083915981657,
+  "runtime_s": 45.692017793655396,
+  "validator_errors": 37
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 10,
+  "n_boxes": 130,
+  "util_pallet1": 0.8293568346825251,
+  "util_total": 0.8293568346825251,
+  "runtime_s": 63.087857723236084,
+  "validator_errors": 62
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 1,
+  "n_boxes": 94,
+  "util_pallet1": 0.8219548801214506,
+  "util_total": 0.8219548801214506,
+  "runtime_s": 33.585450172424316,
+  "validator_errors": 40
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 2,
+  "n_boxes": 115,
+  "util_pallet1": 0.854821629518751,
+  "util_total": 0.854821629518751,
+  "runtime_s": 30.417884826660156,
+  "validator_errors": 57
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 3,
+  "n_boxes": 143,
+  "util_pallet1": 0.7960501993710788,
+  "util_total": 0.7960501993710788,
+  "runtime_s": 43.5503249168396,
+  "validator_errors": 75
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 4,
+  "n_boxes": 185,
+  "util_pallet1": 0.8053574621414294,
+  "util_total": 0.8053574621414294,
+  "runtime_s": 55.473023891448975,
+  "validator_errors": 108
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 5,
+  "n_boxes": 113,
+  "util_pallet1": 0.8160953511543183,
+  "util_total": 0.8160953511543183,
+  "runtime_s": 36.87705111503601,
+  "validator_errors": 60
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 6,
+  "n_boxes": 143,
+  "util_pallet1": 0.8138181871356301,
+  "util_total": 0.8138181871356301,
+  "runtime_s": 34.58263802528381,
+  "validator_errors": 68
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 7,
+  "n_boxes": 144,
+  "util_pallet1": 0.8047043465487433,
+  "util_total": 0.8047043465487433,
+  "runtime_s": 30.112138032913208,
+  "validator_errors": 76
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 8,
+  "n_boxes": 104,
+  "util_pallet1": 0.8328709368878703,
+  "util_total": 0.8328709368878703,
+  "runtime_s": 33.89737105369568,
+  "validator_errors": 47
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 9,
+  "n_boxes": 133,
+  "util_pallet1": 0.8150892566938366,
+  "util_total": 0.8150892566938366,
+  "runtime_s": 38.67679500579834,
+  "validator_errors": 64
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 10,
+  "n_boxes": 180,
+  "util_pallet1": 0.792558496916877,
+  "util_total": 0.792558496916877,
+  "runtime_s": 33.69721484184265,
+  "validator_errors": 90
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 1,
+  "n_boxes": 98,
+  "util_pallet1": 0.8270809003237661,
+  "util_total": 0.8270809003237661,
+  "runtime_s": 30.84120202064514,
+  "validator_errors": 49
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 2,
+  "n_boxes": 138,
+  "util_pallet1": 0.8331969961734312,
+  "util_total": 0.8331969961734312,
+  "runtime_s": 35.695685148239136,
+  "validator_errors": 63
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 3,
+  "n_boxes": 133,
+  "util_pallet1": 0.7902802694085203,
+  "util_total": 0.7902802694085203,
+  "runtime_s": 31.408298015594482,
+  "validator_errors": 62
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 4,
+  "n_boxes": 142,
+  "util_pallet1": 0.8221948299779126,
+  "util_total": 0.8221948299779126,
+  "runtime_s": 35.60245203971863,
+  "validator_errors": 82
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 5,
+  "n_boxes": 129,
+  "util_pallet1": 0.8307008529851823,
+  "util_total": 0.8307008529851823,
+  "runtime_s": 36.094882011413574,
+  "validator_errors": 68
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 6,
+  "n_boxes": 140,
+  "util_pallet1": 0.8144529575315341,
+  "util_total": 0.8144529575315341,
+  "runtime_s": 38.32560706138611,
+  "validator_errors": 70
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 7,
+  "n_boxes": 132,
+  "util_pallet1": 0.8012782148794169,
+  "util_total": 0.8012782148794169,
+  "runtime_s": 44.644203186035156,
+  "validator_errors": 71
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 8,
+  "n_boxes": 98,
+  "util_pallet1": 0.812914353853588,
+  "util_total": 0.812914353853588,
+  "runtime_s": 34.08275389671326,
+  "validator_errors": 49
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 9,
+  "n_boxes": 135,
+  "util_pallet1": 0.8029965150772924,
+  "util_total": 0.8029965150772924,
+  "runtime_s": 31.270552158355713,
+  "validator_errors": 70
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 10,
+  "n_boxes": 133,
+  "util_pallet1": 0.8088819333710429,
+  "util_total": 0.8088819333710429,
+  "runtime_s": 44.75493597984314,
+  "validator_errors": 73
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 1,
+  "n_boxes": 110,
+  "util_pallet1": 0.8172752597075005,
+  "util_total": 0.8172752597075005,
+  "runtime_s": 30.87234115600586,
+  "validator_errors": 55
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 2,
+  "n_boxes": 129,
+  "util_pallet1": 0.8282576184079427,
+  "util_total": 0.8282576184079427,
+  "runtime_s": 34.23818492889404,
+  "validator_errors": 68
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 3,
+  "n_boxes": 126,
+  "util_pallet1": 0.8013777176315288,
+  "util_total": 0.8013777176315288,
+  "runtime_s": 31.662638902664185,
+  "validator_errors": 68
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 4,
+  "n_boxes": 153,
+  "util_pallet1": 0.8219547139511898,
+  "util_total": 0.8219547139511898,
+  "runtime_s": 52.6639609336853,
+  "validator_errors": 80
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 5,
+  "n_boxes": 126,
+  "util_pallet1": 0.8140028022952766,
+  "util_total": 0.8140028022952766,
+  "runtime_s": 45.052120208740234,
+  "validator_errors": 67
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 6,
+  "n_boxes": 156,
+  "util_pallet1": 0.8071988945024896,
+  "util_total": 0.8071988945024896,
+  "runtime_s": 30.017446994781494,
+  "validator_errors": 88
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 7,
+  "n_boxes": 109,
+  "util_pallet1": 0.8034561420184103,
+  "util_total": 0.8034561420184103,
+  "runtime_s": 38.44119191169739,
+  "validator_errors": 62
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 8,
+  "n_boxes": 119,
+  "util_pallet1": 0.813371887049421,
+  "util_total": 0.813371887049421,
+  "runtime_s": 36.928683042526245,
+  "validator_errors": 66
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 9,
+  "n_boxes": 129,
+  "util_pallet1": 0.7991842701901852,
+  "util_total": 0.7991842701901852,
+  "runtime_s": 33.19271683692932,
+  "validator_errors": 58
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 10,
+  "n_boxes": 135,
+  "util_pallet1": 0.7973794949886372,
+  "util_total": 0.7973794949886372,
+  "runtime_s": 36.497652769088745,
+  "validator_errors": 71
+ }
+]
