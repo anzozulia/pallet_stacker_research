@@ -1,0 +1,9 @@
+Case                                             N         result        rt   vs base
+------------------------------------------------------------------------------------------
+B1 perfect 2×2×2 fill                            8   1p/0u 100.0%     0.26s     0.64x
+C1 user's headline mix                          45    5p/0u 68.5%    11.24s     0.58x
+C2 BR-lite (5 SKU × 8)                          40    4p/0u 65.0%    34.95s     0.98x
+C3 Pareto-distributed 30                        30    2p/0u 40.5%    11.24s     0.48x
+D3 + support_ratio=1.0 (no overhang)            45    4p/0u 85.6%    12.24s     0.90x
+D8 + fragile B boxes                            45    6p/0u 57.1%    11.25s     0.90x
+F3 heavy industrial: few big                     8    2p/0u 40.0%     0.15s     1.06x

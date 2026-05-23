@@ -1,0 +1,3 @@
+F12: N=72 boxes
+Heuristic only: 3p/0u util=65.4% in 0.76s
++MIP(120s): 3p/0u util=65.4% in 133.87s errs=0

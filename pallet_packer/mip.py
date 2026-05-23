@@ -138,7 +138,9 @@ def mip_polish(
         dy_var.append(dyv)
         dz_var.append(dzv)
 
-    # Placement coordinates.
+    # Placement coordinates. (Tried tight bounds [0, L - min_dx_i] — caused
+    # MIP search-path variance with no net benefit; some cases regressed.
+    # Reverted to loose bounds, geometric constraint handles containment.)
     x_var = [model.NewIntVar(0, L, f"x{i}") for i in range(n)]
     y_var = [model.NewIntVar(0, W, f"y{i}") for i in range(n)]
     z_var = [model.NewIntVar(0, H, f"z{i}") for i in range(n)]
@@ -158,11 +160,41 @@ def mip_polish(
         model.Add(y_var[i] + dy_var[i] <= W).OnlyEnforceIf(placed[i])
         model.Add(z_var[i] + dz_var[i] <= H).OnlyEnforceIf(placed[i])
 
-    # Pairwise no-overlap: for each pair (i, j) and each pallet p where both
-    # are assigned, at least one of 6 separation axes must hold.
-    # We build the "same-pallet" boolean once per pair-pallet.
+    # Pair-pruning: identify (i, j) pairs that can NEVER share a pallet, so
+    # we can drop their pairwise no-overlap constraint and replace with
+    # cheap mutual-exclusion. Items are incompatible if:
+    #   - combined weight exceeds the pallet's budget, OR
+    #   - they can't fit side-by-side in ANY axis (using min possible dims).
+    # The no-overlap formulation costs ~7 BoolVars per (i, j, p); pruning
+    # incompatible pairs replaces that with a single linear constraint.
+    min_dx_i = [min(_int(b.dims_for(r)[0]) for r in b.allowed_rotations) for b in boxes]
+    min_dy_i = [min(_int(b.dims_for(r)[1]) for r in b.allowed_rotations) for b in boxes]
+    min_dz_i = [min(_int(b.dims_for(r)[2]) for r in b.allowed_rotations) for b in boxes]
+    max_w_int_for_pair = _int(max_w) if max_w is not None and max_w < float('inf') else None
+    incompatible: set = set()
     for i in range(n):
         for j in range(i + 1, n):
+            wi, wj = _int(boxes[i].weight), _int(boxes[j].weight)
+            if (max_w_int_for_pair is not None
+                    and wi + wj > max_w_int_for_pair):
+                incompatible.add((i, j))
+                continue
+            # Side-by-side feasible if at least one axis can fit both.
+            if (min_dx_i[i] + min_dx_i[j] > L
+                    and min_dy_i[i] + min_dy_i[j] > W
+                    and min_dz_i[i] + min_dz_i[j] > H):
+                incompatible.add((i, j))
+
+    # Pairwise no-overlap: for each pair (i, j) and each pallet p where both
+    # are assigned, at least one of 6 separation axes must hold.
+    # Incompatible pairs get cheap mutual-exclusion instead.
+    for i in range(n):
+        for j in range(i + 1, n):
+            if (i, j) in incompatible:
+                # Can't share a pallet.
+                for p in range(P):
+                    model.Add(assigned[i][p] + assigned[j][p] <= 1)
+                continue
             for p in range(P):
                 # both_on_p ⟺ (assigned[i][p] ∧ assigned[j][p])
                 both = model.NewBoolVar(f"both{i}_{j}_{p}")
@@ -179,6 +211,14 @@ def mip_polish(
                 model.Add(z_var[j] + dz_var[j] <= z_var[i]).OnlyEnforceIf(sep[5])
                 # If both on same pallet, at least one separation must hold.
                 model.AddBoolOr(sep).OnlyEnforceIf(both)
+
+    # NOTE: Tried explicit SKU-symmetry breaking (packed-ness order + lex
+    # order on positions among identical items). Caused 2-3× SLOWDOWN on
+    # C1/D3/D8 and a quality REGRESSION on C1 (4p/86% → 5p/68%). The lex
+    # constraints invalidate warm-start hints that don't pre-respect the
+    # canonical order, so CP-SAT spends search budget reconciling instead
+    # of improving. Reverted; left here as a recorded dead-end.
+    # See docs/reports/11_option_c_mip_formulation.md.
 
     # Fixed obstacles: pre-placed items at known positions on specific
     # pallets. These don't get re-arranged but the free items must

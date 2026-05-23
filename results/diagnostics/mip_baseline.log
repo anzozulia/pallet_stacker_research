@@ -1,0 +1,9 @@
+Case                                             N         result        rt     status
+-----------------------------------------------------------------------------------------------
+B1 perfect 2×2×2 fill                            8   1p/0u 100.0%     0.40s         OK
+C1 user's headline mix                          45    4p/0u 85.6%    19.51s         OK
+C2 BR-lite (5 SKU × 8)                          40    4p/0u 65.0%    35.65s         OK
+C3 Pareto-distributed 30                        30    2p/0u 40.5%    23.56s         OK
+D3 + support_ratio=1.0 (no overhang)            45    5p/0u 68.5%    13.58s         OK
+D8 + fragile B boxes                            45    6p/0u 57.1%    12.53s         OK
+F3 heavy industrial: few big                     8    2p/0u 40.0%     0.14s         OK
