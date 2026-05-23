@@ -1,0 +1,19 @@
+v3.5: pop=600/3pops, restarts=1, LS=4.0s, time=30.0s/instance
+
+=== thpack1 (10 inst) ===
+  BR1: n=10 mean=88.8% stdev=2.6 elapsed=305s
+
+=== thpack3 (10 inst) ===
+  BR3: n=10 mean=87.7% stdev=2.5 elapsed=318s
+
+=== thpack5 (10 inst) ===
+  BR5: n=10 mean=87.3% stdev=1.7 elapsed=321s
+
+=== thpack7 (10 inst) ===
+  BR7: n=10 mean=86.8% stdev=1.0 elapsed=315s
+
+=== v3.5 Summary ===
+BR1: n= 10 mean= 88.8% stdev=2.6
+BR3: n= 10 mean= 87.7% stdev=2.5
+BR5: n= 10 mean= 87.3% stdev=1.7
+BR7: n= 10 mean= 86.8% stdev=1.0

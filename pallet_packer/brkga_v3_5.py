@@ -550,6 +550,32 @@ def decode_njit_mode(
 # Python wrappers
 # ============================================================================
 
+_JIT_WARMED = False
+
+def warmup_jit() -> None:
+    """Pre-compile all JIT decoder modes. Saves ~1-2s on first calls.
+
+    Without this, each new mode triggers compilation on its first invocation
+    inside the BRKGA loop, causing ~400-700ms hiccups that bias eval timing.
+    """
+    global _JIT_WARMED
+    if _JIT_WARMED:
+        return
+    n = 2
+    bps = np.zeros(n, dtype=np.int64)
+    bps[0] = 0; bps[1] = 1
+    n_rots = np.array([1, 1], dtype=np.int64)
+    dims = np.zeros((n, 6, 3), dtype=np.int64)
+    dims[:, 0, 0] = 10
+    dims[:, 0, 1] = 10
+    dims[:, 0, 2] = 10
+    placements = np.zeros((n, 6), dtype=np.int64)
+    for mode in (0, 1, 2):
+        _ = decode_njit_mode(bps, n_rots, dims, 100, 100, 100, 1, placements, mode)
+    _ = decode_layer_njit(bps, n_rots, dims, 100, 100, 100, 1, placements)
+    _JIT_WARMED = True
+
+
 def decode_chromosome(
     chrom: np.ndarray,
     boxes: List[Box],
@@ -882,6 +908,67 @@ def local_search_2opt(
 
 
 # ============================================================================
+# Path relinking
+# ============================================================================
+
+def path_relinking(
+    chrom_a: np.ndarray,
+    chrom_b: np.ndarray,
+    boxes: List[Box], pallet: Pallet, config: PackerConfig,
+    n_rots_arr: np.ndarray, dims_all: np.ndarray,
+    *,
+    multi_decoder: bool = True,
+    n_modes: int = 4,
+    max_pallets: int = 1,
+    max_evals: int = 100,
+    verbose: bool = False,
+) -> Tuple[PackResult, np.ndarray, float]:
+    """Path relinking: walk from chrom_a to chrom_b by progressively copying
+    chrom_b's keys into chrom_a, evaluating each intermediate.
+
+    Returns the best intermediate found (which may be one of the endpoints
+    if no improvement).
+    """
+    if multi_decoder:
+        decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_auto_mode(
+            c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes)
+    else:
+        decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
+            c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
+    n = len(boxes)
+    res_a = decoder(chrom_a, boxes, pallet, config, n_rots_arr, dims_all,
+                    max_pallets=max_pallets)
+    fit_a = _fitness_pallet1(res_a, pallet)
+    # Identify positions where the two chromosomes differ significantly
+    diffs = np.where(np.abs(chrom_a - chrom_b) > 1e-6)[0]
+    if len(diffs) == 0:
+        return res_a, chrom_a, fit_a
+    rng = np.random.default_rng(11)
+    rng.shuffle(diffs)
+    # Limit steps to max_evals
+    step_size = max(1, len(diffs) // max_evals)
+    best = chrom_a.copy()
+    best_fit = fit_a
+    best_res = res_a
+    current = chrom_a.copy()
+    for k in range(0, len(diffs), step_size):
+        # Copy this batch of diffs from chrom_b
+        end = min(k + step_size, len(diffs))
+        for i in range(k, end):
+            current[diffs[i]] = chrom_b[diffs[i]]
+        cand_res = decoder(current, boxes, pallet, config, n_rots_arr, dims_all,
+                            max_pallets=max_pallets)
+        cand_fit = _fitness_pallet1(cand_res, pallet)
+        if cand_fit < best_fit - 1e-9:
+            best_fit = cand_fit
+            best = current.copy()
+            best_res = cand_res
+            if verbose:
+                print(f"  [PR] step {k}: util={(1-best_fit)*100:.2f}%")
+    return best_res, best, best_fit
+
+
+# ============================================================================
 # v3.5 main driver
 # ============================================================================
 
@@ -960,6 +1047,7 @@ def brkga_pack_v35(
     if n == 0:
         return PackResult(pallets=[], unpacked=[])
 
+    warmup_jit()
     n_rots_arr, dims_all = precompute_box_dims(boxes)
     chrom_size = 2 * n + (1 if use_multi_decoder else 0)
     if use_multi_decoder:
@@ -1046,13 +1134,17 @@ def brkga_pack_v35(
     # ----------------------------------------------------------------------
     # Phase 2: BRKGA
     # ----------------------------------------------------------------------
-    brkga_budget = (time_limit_s - v2_time
-                    - (local_search_budget_s if use_local_search else 0))
+    # Reserve budget for LS + PR (if enabled)
+    polish_budget = (local_search_budget_s if use_local_search else 0)
+    brkga_budget = time_limit_s - v2_time - polish_budget
     brkga_budget = max(1.0, brkga_budget)
 
     best_fitness = float('inf')
     best_result: Optional[PackResult] = None
     best_chrom: Optional[np.ndarray] = None
+    # Track top-2 distinct elites for path relinking
+    second_best_fitness = float('inf')
+    second_best_chrom: Optional[np.ndarray] = None
     gens_no_improve = 0
     t0 = time.time()
     total_decodes = 0
@@ -1072,12 +1164,20 @@ def brkga_pack_v35(
                 fits[i] = _fitness_pallet1(res, pallet)
                 total_decodes += 1
                 if fits[i] < best_fitness - 1e-9:
+                    # Demote current best to second
+                    second_best_fitness = best_fitness
+                    second_best_chrom = best_chrom
                     best_fitness = float(fits[i])
                     best_result = res
                     best_chrom = pops[k][i].copy()
                     gens_no_improve = 0
                     if verbose:
                         print(f"  [v3.5 BRKGA] gen {gen} pop {k}: util={(1-best_fitness)*100:.2f}%")
+                elif (fits[i] < second_best_fitness - 1e-9 and
+                      fits[i] > best_fitness + 1e-9):
+                    # Update second-best (distinct from best)
+                    second_best_fitness = float(fits[i])
+                    second_best_chrom = pops[k][i].copy()
 
         gens_no_improve += 1
         if gens_no_improve >= patience:
@@ -1115,7 +1215,25 @@ def brkga_pack_v35(
         pops = new_pops
 
     # ----------------------------------------------------------------------
-    # Phase 3: Local search polish
+    # Phase 3a: Path relinking between top-2 elites (cheap)
+    # ----------------------------------------------------------------------
+    if (best_chrom is not None and second_best_chrom is not None
+            and use_local_search):
+        pr_res, pr_chrom, pr_fit = path_relinking(
+            best_chrom, second_best_chrom,
+            boxes, pallet, config, n_rots_arr, dims_all,
+            multi_decoder=use_multi_decoder, n_modes=n_modes,
+            max_pallets=max_pallets, max_evals=50, verbose=verbose,
+        )
+        if pr_fit < best_fitness - 1e-9:
+            best_fitness = pr_fit
+            best_result = pr_res
+            best_chrom = pr_chrom
+            if verbose:
+                print(f"  [v3.5] path relinking improved: util={(1-best_fitness)*100:.2f}%")
+
+    # ----------------------------------------------------------------------
+    # Phase 3b: Local search polish
     # ----------------------------------------------------------------------
     if use_local_search and best_chrom is not None:
         ls_res, ls_chrom, accepts = local_search_2opt(
