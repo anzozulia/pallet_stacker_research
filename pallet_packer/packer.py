@@ -226,6 +226,15 @@ class PalletState:
     # 'bbl'  - bottom-back-left: sort by (z, x, y)
     # 'max_touch' - prefer placements with the largest support contact
     # 'corner_fit' - prefer placements where the box hugs a corner / wall
+    #
+    # NOTE: Tried 3 additional strategies in a Path 1 attempt — tight_bbox,
+    # back_first, min_overhang. Together added +52% to baseline runtime
+    # via 14 trials vs the original 8, but yielded ZERO new wins in the
+    # candidate set across the 41-case suite. The existing 4 strategies
+    # already cover the search space well enough that more scoring variants
+    # are redundant. The 3 strategy implementations remain in
+    # `_score_placement` (cheap dead code) in case future work wants to
+    # re-enable them by extending this tuple. See 12_path_1_decoder.md.
     SCORING_STRATEGIES = ("blb", "bbl", "max_touch", "corner_fit")
 
     def try_place(self, box: Box, strategy: str = "blb") -> bool:
