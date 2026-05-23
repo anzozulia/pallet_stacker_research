@@ -136,10 +136,50 @@ as the trusted production reference with the full constraint stack
 geometric utilization.
 
 **For closing the BR1 gap (~3pp to BRKGA-2013 SOTA 92.6%)**: would
-require either:
-- 60-180s compute budget (BRKGA-2013 likely used such)
-- True SKU-aware encoding (chromosome size O(S) where S = #SKUs)
-- Path relinking + LNS together
-- Multi-restart with diverse seeds
+require structural changes, not just more compute:
 
-All achievable in pure Python, none crucial for deployment.
+1. **Multi-restart**: tested empirically (n_restarts=2, 60s/inst on BR1
+   n=10). Result: +0.11pp mean (89.08 → 89.19) at 2× cost. Only 3 of 10
+   instances benefited. **Not worth the compute cost** — the BRKGA
+   converges to the same local optima from the v2-seeded init regardless
+   of additional restart seeds. See
+   `results/diagnostics/brkga_v35_multirestart_test.log`.
+
+2. **True SKU-aware encoding**: chromosome size O(S) where S = #SKUs (3-7
+   for BR1). Would dramatically reduce the search space for homogeneous
+   loads. Untested.
+
+3. **Adaptive operator selection**: tabu search, GLS, ALNS variants. None
+   tested but well-documented in the literature.
+
+4. **GPU/C extension**: would enable literature-scale population
+   (pop = 20·N) within the same wall-clock budget.
+
+All four are research-grade efforts. None required for deployment quality.
+
+## Empirical findings from this iteration
+
+- **Wall-build sentinel bug**: the original v3.5 had `best_minimise = 10
+  * (L + W + H)` which was much smaller than wall mode's actual score
+  range. For any x≥2, no placement was accepted, so wall mode placed only
+  11/112 boxes on BR1. Fix (1<<62 sentinel) restored wall to ~88% util.
+
+- **Per-decoder strength on BR1#1 (vol-desc chromosome)**:
+  DFTRC 84.91%, wall 87.82%, **corner 88.22%** (best single), layer 85.86%.
+  Corner-fill is surprisingly the strongest deterministic decoder.
+
+- **Layer-build characteristic**: highly seed-dependent. With informed
+  seeds (vol-desc): 85.86%. With random chromosomes: 64.75% mean.
+  Useful as one mode of multi-decoder but weak alone.
+
+- **Smart init dominates BRKGA gains**: The first decoded chromosome
+  (using v2's ordering + smart sort) typically scores 86-88%. BRKGA only
+  adds 2-4pp over this baseline. Most of v3.5's improvement over
+  v3-fast comes from the seed quality, not the genetic search.
+
+- **Path relinking marginal**: contributes <0.5pp in our setup. Worth
+  keeping for cases where it helps but not a major lever.
+
+- **Most instances converge to same optimum**: in OLD vs NEW comparison,
+  7 of 10 BR1 instances had identical results. Variance is concentrated
+  on hard instances (e.g., BR1#3 outlier).

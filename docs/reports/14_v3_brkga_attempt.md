@@ -1,3 +1,9 @@
+> **Update**: This report covers v3-fast (the first BRKGA-2013 reproduction
+> attempt). v3.5 (in `docs/reports/15_v35_breakthrough.md`) builds on this
+> work and adds smart init + v2 warm-start + multi-decoder + path
+> relinking, achieving +3-5pp on every BR set, beating Bortfeldt-2000
+> across the board, and exceeding BRKGA-2013 SOTA on BR7.
+
 ## v3 — BRKGA-2013 Reproduction Attempt
 
 A from-scratch implementation of Gonçalves & Resende's BRKGA-2013
