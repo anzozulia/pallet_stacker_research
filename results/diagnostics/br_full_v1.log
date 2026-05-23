@@ -1,0 +1,65 @@
+Configs to run: ['v1']
+
+=== thpack1: 100 instances ===
+  [v1] 10/100 elapsed=37.1s
+  SKIP BR1#13 N=284 (> --skip-huge-n)
+  [v1] 20/100 elapsed=67.3s
+  SKIP BR1#30 N=405 (> --skip-huge-n)
+  [v1] 30/100 elapsed=96.1s
+  SKIP BR1#33 N=282 (> --skip-huge-n)
+  [v1] 40/100 elapsed=145.5s
+  [v1] 50/100 elapsed=184.2s
+  SKIP BR1#56 N=408 (> --skip-huge-n)
+  [v1] 60/100 elapsed=218.8s
+  SKIP BR1#65 N=476 (> --skip-huge-n)
+  [v1] 70/100 elapsed=276.9s
+  SKIP BR1#76 N=269 (> --skip-huge-n)
+  SKIP BR1#85 N=319 (> --skip-huge-n)
+  [v1] 80/100 elapsed=320.8s
+  [v1] 90/100 elapsed=361.0s
+  [v1] thpack1: n=93 mean=81.6% stdev=5.1 range=[69.8, 91.3] set_time=381.7s
+
+=== thpack3: 100 instances ===
+  [v1] 10/100 elapsed=39.3s
+  [v1] 20/100 elapsed=71.2s
+  [v1] 30/100 elapsed=108.7s
+  [v1] 40/100 elapsed=154.2s
+  [v1] 50/100 elapsed=181.1s
+  [v1] 60/100 elapsed=240.4s
+  [v1] 70/100 elapsed=272.1s
+  [v1] 80/100 elapsed=322.7s
+  [v1] 90/100 elapsed=355.0s
+  [v1] 100/100 elapsed=404.3s
+  [v1] thpack3: n=100 mean=79.6% stdev=4.0 range=[70.4, 90.5] set_time=404.3s
+
+=== thpack5: 100 instances ===
+  [v1] 10/100 elapsed=33.7s
+  [v1] 20/100 elapsed=66.3s
+  [v1] 30/100 elapsed=107.7s
+  [v1] 40/100 elapsed=149.5s
+  [v1] 50/100 elapsed=183.9s
+  [v1] 60/100 elapsed=238.0s
+  [v1] 70/100 elapsed=267.3s
+  [v1] 80/100 elapsed=312.5s
+  [v1] 90/100 elapsed=342.2s
+  [v1] 100/100 elapsed=379.6s
+  [v1] thpack5: n=100 mean=79.0% stdev=3.5 range=[68.7, 85.6] set_time=379.6s
+
+=== thpack7: 100 instances ===
+  [v1] 10/100 elapsed=35.9s
+  [v1] 20/100 elapsed=70.7s
+  [v1] 30/100 elapsed=106.7s
+  [v1] 40/100 elapsed=147.1s
+  [v1] 50/100 elapsed=179.9s
+  [v1] 60/100 elapsed=216.5s
+  [v1] 70/100 elapsed=250.6s
+  [v1] 80/100 elapsed=286.3s
+  [v1] 90/100 elapsed=316.1s
+  [v1] 100/100 elapsed=348.5s
+  [v1] thpack7: n=100 mean=78.2% stdev=3.0 range=[70.8, 84.0] set_time=348.5s
+
+=== Summary ===
+BR1    v1          : n= 93 mean= 81.6% stdev=5.1
+BR3    v1          : n=100 mean= 79.6% stdev=4.0
+BR5    v1          : n=100 mean= 79.0% stdev=3.5
+BR7    v1          : n=100 mean= 78.2% stdev=3.0

@@ -1,0 +1,38 @@
+Industry cases: 10
+Configs: ['+mip', 'quality']
+
+Case                                           Cfg           N  pals  unp  util%      rt
+------------------------------------------------------------------------------------------
+IND1 E-commerce fulfillment (120 mixed)        +mip        120     2    0  50.4%  23.90s
+IND1 E-commerce fulfillment (120 mixed)        quality     120     2    0  50.4%  77.31s
+IND2 Pharma distribution (200 all-fragile)     +mip        200     4    0   6.0%  51.96s
+IND2 Pharma distribution (200 all-fragile)     quality     200     4    0   6.0% 249.37s
+IND3 Furniture/appliances (15 large)           +mip         15     7    3  15.9%   1.41s
+IND3 Furniture/appliances (15 large)           quality      15     6    3  18.6%   1.38s
+IND4 Beverage cases (44, weight-binding)       +mip         44     1    0  69.2%   0.28s
+IND4 Beverage cases (44, weight-binding)       quality      44     1    0  69.2%   1.17s
+IND5 Retail order 4-SKU (150 boxes)            +mip        150     2    0  53.3%  20.34s
+IND5 Retail order 4-SKU (150 boxes)            quality     150     2    0  53.3% 171.95s
+IND6 LTL groupage (3 customers, 43 boxes)      +mip         43     1    0  39.2%   0.36s
+IND6 LTL groupage (3 customers, 43 boxes)      quality      43     1    0  39.2%   1.42s
+IND7 Electronics warehouse (150 mixed)         +mip        150     4    0  19.6%   4.87s
+IND7 Electronics warehouse (150 mixed)         quality     150     4    0  19.6%  37.94s
+IND8 Automotive parts (60 heavy heterogeneous) +mip         60     3    0  26.2%   2.95s
+IND8 Automotive parts (60 heavy heterogeneous) quality      60     3    0  26.2%   4.76s
+IND9 Document shipping (100 banker boxes)      +mip        100     2    0  79.2%  15.35s
+IND9 Document shipping (100 banker boxes)      quality     100     2    0  79.2%  35.98s
+IND10 Cold-chain reefer (80 insulated)         +mip         80     2    0  52.1%   2.97s
+IND10 Cold-chain reefer (80 insulated)         quality      80     2    0  52.1%  12.92s
+
+=== Comparison (default config vs best of new configs) ===
+
+IND1 E-commerce fulfillment (120 mixed)        v1=2p/50.4%  best=2p/50.4%  —
+IND10 Cold-chain reefer (80 insulated)         v1=2p/52.1%  best=2p/52.1%  —
+IND2 Pharma distribution (200 all-fragile)     v1=4p/6.0%  best=4p/6.0%  —
+IND3 Furniture/appliances (15 large)           v1=7p/15.9%  best=6p/18.6%  -1p / +2.7pp util via quality
+IND4 Beverage cases (44, weight-binding)       v1=1p/69.2%  best=1p/69.2%  —
+IND5 Retail order 4-SKU (150 boxes)            v1=2p/53.3%  best=2p/53.3%  —
+IND6 LTL groupage (3 customers, 43 boxes)      v1=1p/39.2%  best=1p/39.2%  —
+IND7 Electronics warehouse (150 mixed)         v1=4p/19.6%  best=4p/19.6%  —
+IND8 Automotive parts (60 heavy heterogeneous) v1=3p/26.2%  best=3p/26.2%  —
+IND9 Document shipping (100 banker boxes)      v1=2p/79.2%  best=2p/79.2%  —

@@ -1,0 +1,70 @@
+Configs to run: ['v1+layer']
+Resuming with 393 existing results
+
+=== thpack1: 100 instances ===
+  [v1+layer] 10/100 elapsed=65.5s
+  SKIP BR1#13 N=284 (> --skip-huge-n)
+  [v1+layer] 20/100 elapsed=117.7s
+  SKIP BR1#30 N=405 (> --skip-huge-n)
+  [v1+layer] 30/100 elapsed=165.0s
+  SKIP BR1#33 N=282 (> --skip-huge-n)
+  [v1+layer] 40/100 elapsed=250.5s
+  [v1+layer] 50/100 elapsed=317.2s
+  SKIP BR1#56 N=408 (> --skip-huge-n)
+  [v1+layer] 60/100 elapsed=371.8s
+  SKIP BR1#65 N=476 (> --skip-huge-n)
+  [v1+layer] 70/100 elapsed=463.4s
+  SKIP BR1#76 N=269 (> --skip-huge-n)
+  SKIP BR1#85 N=319 (> --skip-huge-n)
+  [v1+layer] 80/100 elapsed=535.8s
+  [v1+layer] 90/100 elapsed=605.4s
+  [v1+layer] thpack1: n=93 mean=84.2% stdev=4.2 range=[72.0, 91.3] set_time=638.5s
+
+=== thpack3: 100 instances ===
+  [v1+layer] 10/100 elapsed=62.2s
+  [v1+layer] 20/100 elapsed=114.9s
+  [v1+layer] 30/100 elapsed=175.5s
+  [v1+layer] 40/100 elapsed=246.7s
+  [v1+layer] 50/100 elapsed=290.0s
+  [v1+layer] 60/100 elapsed=380.3s
+  [v1+layer] 70/100 elapsed=431.1s
+  [v1+layer] 80/100 elapsed=508.4s
+  [v1+layer] 90/100 elapsed=561.1s
+  [v1+layer] 100/100 elapsed=638.4s
+  [v1+layer] thpack3: n=100 mean=82.2% stdev=3.2 range=[75.2, 90.8] set_time=638.4s
+
+=== thpack5: 100 instances ===
+  [v1+layer] 10/100 elapsed=51.9s
+  [v1+layer] 20/100 elapsed=103.6s
+  [v1+layer] 30/100 elapsed=166.6s
+  [v1+layer] 40/100 elapsed=230.5s
+  [v1+layer] 50/100 elapsed=283.7s
+  [v1+layer] 60/100 elapsed=365.5s
+  [v1+layer] 70/100 elapsed=411.9s
+  [v1+layer] 80/100 elapsed=481.1s
+  [v1+layer] 90/100 elapsed=527.1s
+  [v1+layer] 100/100 elapsed=585.3s
+  [v1+layer] thpack5: n=100 mean=81.0% stdev=2.7 range=[72.2, 85.6] set_time=585.3s
+
+=== thpack7: 100 instances ===
+  [v1+layer] 10/100 elapsed=53.8s
+  [v1+layer] 20/100 elapsed=1125.0s
+  [v1+layer] 30/100 elapsed=1178.9s
+  [v1+layer] 40/100 elapsed=1238.8s
+  [v1+layer] 50/100 elapsed=1288.9s
+  [v1+layer] 60/100 elapsed=1344.9s
+  [v1+layer] 70/100 elapsed=1395.5s
+  [v1+layer] 80/100 elapsed=1448.9s
+  [v1+layer] 90/100 elapsed=1494.3s
+  [v1+layer] 100/100 elapsed=1543.3s
+  [v1+layer] thpack7: n=100 mean=79.8% stdev=2.4 range=[70.8, 84.5] set_time=1543.3s
+
+=== Summary ===
+BR1    v1          : n= 93 mean= 81.6% stdev=5.1
+BR1    v1+layer    : n= 93 mean= 84.2% stdev=4.2
+BR3    v1          : n=100 mean= 79.6% stdev=4.0
+BR3    v1+layer    : n=100 mean= 82.2% stdev=3.2
+BR5    v1          : n=100 mean= 79.0% stdev=3.5
+BR5    v1+layer    : n=100 mean= 81.0% stdev=2.7
+BR7    v1          : n=100 mean= 78.2% stdev=3.0
+BR7    v1+layer    : n=100 mean= 79.8% stdev=2.4
