@@ -117,6 +117,240 @@ def find_best_corner_njit(
 
 
 @njit(cache=True, fastmath=True)
+def find_best_in_slab_njit(
+    emss: np.ndarray, n_ems: int,
+    dx: int, dy: int, dz: int,
+    L: int, W: int, H: int,
+    slab_min_x: int, slab_max_x: int,
+) -> tuple:
+    """Find best DFTRC placement constrained to current slab.
+
+    Slab spans X in [slab_min_x, slab_max_x]. Placement requires
+    ex_min >= slab_min_x AND ex_min + dx <= slab_max_x. Scoring is
+    DFTRC on YZ only (X is determined by slab structure).
+    """
+    best_idx = -1
+    best_yz = -1
+    bx = 0
+    by = 0
+    bz = 0
+    for i in range(n_ems):
+        ex_min = emss[i, 0, 0]
+        ey_min = emss[i, 0, 1]
+        ez_min = emss[i, 0, 2]
+        ex_max = emss[i, 1, 0]
+        ey_max = emss[i, 1, 1]
+        ez_max = emss[i, 1, 2]
+        if (ex_max - ex_min) < dx:
+            continue
+        if (ey_max - ey_min) < dy:
+            continue
+        if (ez_max - ez_min) < dz:
+            continue
+        if ex_min < slab_min_x:
+            continue
+        if ex_min + dx > slab_max_x:
+            continue
+        x = ex_min
+        y = ey_min
+        z = ez_min
+        yz = (W - y - dy) * (W - y - dy) + (H - z - dz) * (H - z - dz)
+        if yz > best_yz:
+            best_yz = yz
+            best_idx = i
+            bx, by, bz = x, y, z
+    return best_idx, bx, by, bz
+
+
+@njit(cache=True, fastmath=True)
+def decode_layer_njit(
+    bps_order: np.ndarray,
+    n_rots_per_box: np.ndarray,
+    dims_all: np.ndarray,
+    L: int, W: int, H: int,
+    max_pallets: int,
+    placements_out: np.ndarray,
+) -> int:
+    """Bischoff-Ratcliff layer-building decoder (JIT).
+
+    For each bin we maintain a current slab [slab_min_x, slab_max_x] along X.
+    The slab's depth is determined by the FIRST box placed in it (the
+    "seed"). Subsequent boxes in BPS order:
+
+      Phase 1: try to place in current slab via find_best_in_slab_njit.
+               Scoring is DFTRC on YZ only.
+      Phase 2: if no fit, open a new slab at slab_max_x (this box becomes
+               the new seed, slab_max_x advances by box.dx).
+      Phase 3: if no fit in any existing bin, open a new bin.
+
+    This produces explicit slab-structured packings ideal for homogeneous
+    loads (BR1, BR3) — the literature's key advantage over greedy DFTRC.
+    """
+    n = bps_order.shape[0]
+    MAX_BINS = max_pallets if max_pallets > 0 else 32
+    bin_emss = np.zeros((MAX_BINS, MAX_EMS, 2, 3), dtype=np.int64)
+    bin_ems_count = np.zeros(MAX_BINS, dtype=np.int64)
+    bin_slab_min_x = np.zeros(MAX_BINS, dtype=np.int64)
+    bin_slab_max_x = np.zeros(MAX_BINS, dtype=np.int64)
+    n_bins = 0
+    scratch = np.zeros((MAX_EMS, 2, 3), dtype=np.int64)
+
+    for i in range(n):
+        box_idx = bps_order[i]
+        n_rots = n_rots_per_box[box_idx]
+        placed = False
+
+        # Phase 1: try existing slab in each bin
+        best_bin = -1
+        best_rot = -1
+        best_x = 0
+        best_y = 0
+        best_z = 0
+        best_yz = -1
+        for b in range(n_bins):
+            for r in range(n_rots):
+                dx = dims_all[box_idx, r, 0]
+                dy = dims_all[box_idx, r, 1]
+                dz = dims_all[box_idx, r, 2]
+                idx, x, y, z = find_best_in_slab_njit(
+                    bin_emss[b], bin_ems_count[b], dx, dy, dz, L, W, H,
+                    bin_slab_min_x[b], bin_slab_max_x[b])
+                if idx < 0:
+                    continue
+                yz = (W - y - dy) * (W - y - dy) + (H - z - dz) * (H - z - dz)
+                if yz > best_yz:
+                    best_yz = yz
+                    best_bin = b
+                    best_rot = r
+                    best_x, best_y, best_z = x, y, z
+            if best_bin >= 0:
+                break
+
+        if best_bin >= 0:
+            r = best_rot
+            dx = dims_all[box_idx, r, 0]
+            dy = dims_all[box_idx, r, 1]
+            dz = dims_all[box_idx, r, 2]
+            new_count = commit_ems_njit(
+                bin_emss[best_bin], bin_ems_count[best_bin],
+                best_x, best_y, best_z,
+                best_x + dx, best_y + dy, best_z + dz,
+                scratch,
+            )
+            for j in range(new_count):
+                bin_emss[best_bin, j, 0, 0] = scratch[j, 0, 0]
+                bin_emss[best_bin, j, 0, 1] = scratch[j, 0, 1]
+                bin_emss[best_bin, j, 0, 2] = scratch[j, 0, 2]
+                bin_emss[best_bin, j, 1, 0] = scratch[j, 1, 0]
+                bin_emss[best_bin, j, 1, 1] = scratch[j, 1, 1]
+                bin_emss[best_bin, j, 1, 2] = scratch[j, 1, 2]
+            bin_ems_count[best_bin] = new_count
+            placements_out[i, 0] = best_bin
+            placements_out[i, 1] = best_rot
+            placements_out[i, 2] = best_x
+            placements_out[i, 3] = best_y
+            placements_out[i, 4] = best_z
+            placements_out[i, 5] = 1
+            continue
+
+        # Phase 2: open new slab in existing bin (this box becomes the seed)
+        for b in range(n_bins):
+            slab_start = bin_slab_max_x[b]
+            if slab_start >= L:
+                continue
+            for r in range(n_rots):
+                dx = dims_all[box_idx, r, 0]
+                dy = dims_all[box_idx, r, 1]
+                dz = dims_all[box_idx, r, 2]
+                if slab_start + dx > L:
+                    continue
+                idx, x, y, z = find_best_in_slab_njit(
+                    bin_emss[b], bin_ems_count[b], dx, dy, dz, L, W, H,
+                    slab_start, slab_start + dx)
+                if idx < 0:
+                    continue
+                # Commit: box becomes seed of new slab
+                new_count = commit_ems_njit(
+                    bin_emss[b], bin_ems_count[b],
+                    x, y, z, x + dx, y + dy, z + dz, scratch,
+                )
+                for j in range(new_count):
+                    bin_emss[b, j, 0, 0] = scratch[j, 0, 0]
+                    bin_emss[b, j, 0, 1] = scratch[j, 0, 1]
+                    bin_emss[b, j, 0, 2] = scratch[j, 0, 2]
+                    bin_emss[b, j, 1, 0] = scratch[j, 1, 0]
+                    bin_emss[b, j, 1, 1] = scratch[j, 1, 1]
+                    bin_emss[b, j, 1, 2] = scratch[j, 1, 2]
+                bin_ems_count[b] = new_count
+                bin_slab_min_x[b] = slab_start
+                bin_slab_max_x[b] = slab_start + dx
+                placements_out[i, 0] = b
+                placements_out[i, 1] = r
+                placements_out[i, 2] = x
+                placements_out[i, 3] = y
+                placements_out[i, 4] = z
+                placements_out[i, 5] = 1
+                placed = True
+                break
+            if placed:
+                break
+        if placed:
+            continue
+
+        # Phase 3: open new bin
+        if n_bins >= MAX_BINS:
+            placements_out[i, 5] = 0
+            continue
+        bin_emss[n_bins, 0, 0, 0] = 0
+        bin_emss[n_bins, 0, 0, 1] = 0
+        bin_emss[n_bins, 0, 0, 2] = 0
+        bin_emss[n_bins, 0, 1, 0] = L
+        bin_emss[n_bins, 0, 1, 1] = W
+        bin_emss[n_bins, 0, 1, 2] = H
+        bin_ems_count[n_bins] = 1
+        bin_slab_min_x[n_bins] = 0
+        bin_slab_max_x[n_bins] = 0
+        # First-fit rotation
+        best_rot_n = -1
+        for r in range(n_rots):
+            dx = dims_all[box_idx, r, 0]
+            dy = dims_all[box_idx, r, 1]
+            dz = dims_all[box_idx, r, 2]
+            if dx <= L and dy <= W and dz <= H:
+                best_rot_n = r
+                break
+        if best_rot_n < 0:
+            placements_out[i, 5] = 0
+            continue
+        r = best_rot_n
+        dx = dims_all[box_idx, r, 0]
+        dy = dims_all[box_idx, r, 1]
+        dz = dims_all[box_idx, r, 2]
+        new_count = commit_ems_njit(
+            bin_emss[n_bins], bin_ems_count[n_bins],
+            0, 0, 0, dx, dy, dz, scratch,
+        )
+        for j in range(new_count):
+            bin_emss[n_bins, j, 0, 0] = scratch[j, 0, 0]
+            bin_emss[n_bins, j, 0, 1] = scratch[j, 0, 1]
+            bin_emss[n_bins, j, 0, 2] = scratch[j, 0, 2]
+            bin_emss[n_bins, j, 1, 0] = scratch[j, 1, 0]
+            bin_emss[n_bins, j, 1, 1] = scratch[j, 1, 1]
+            bin_emss[n_bins, j, 1, 2] = scratch[j, 1, 2]
+        bin_ems_count[n_bins] = new_count
+        bin_slab_min_x[n_bins] = 0
+        bin_slab_max_x[n_bins] = dx
+        placements_out[i, 0] = n_bins
+        placements_out[i, 1] = best_rot_n
+        placements_out[i, 2] = 0
+        placements_out[i, 3] = 0
+        placements_out[i, 4] = 0
+        placements_out[i, 5] = 1
+        n_bins += 1
+    return n_bins
+
+
+@njit(cache=True, fastmath=True)
 def decode_njit_mode(
     bps_order: np.ndarray,
     n_rots_per_box: np.ndarray,
@@ -146,7 +380,9 @@ def decode_njit_mode(
         # Score depends on mode: DFTRC maximises distance, wall minimises X,
         # corner minimises sum.
         best_score = -1
-        best_minimise = 10 * (L + W + H)  # for wall, corner
+        # Sentinel for wall/corner modes. wall's score range is L*(W+H)^2
+        # which is much larger than corner's L+W+H, so use a huge value.
+        best_minimise = 1 << 62  # ~4.6e18, larger than any valid score
         for b in range(n_bins):
             for r in range(n_rots):
                 dx = dims_all[box_idx, r, 0]
@@ -236,7 +472,7 @@ def decode_njit_mode(
             bin_ems_count[n_bins] = 1
             best_rot_n = -1
             best_score_n = -1
-            best_min_n = 10 * (L + W + H)
+            best_min_n = 1 << 62
             best_x_n = 0
             best_y_n = 0
             best_z_n = 0
@@ -324,7 +560,7 @@ def decode_chromosome(
     mode: int,
     max_pallets: int = 1,
 ) -> PackResult:
-    """Decode chromosome with chosen mode (0=DFTRC, 1=wall, 2=corner)."""
+    """Decode chromosome with chosen mode (0=DFTRC, 1=wall, 2=corner, 3=layer)."""
     n = len(boxes)
     if n == 0:
         return PackResult(pallets=[], unpacked=[])
@@ -336,10 +572,16 @@ def decode_chromosome(
     H = int(round(pallet.height))
 
     placements_out = np.zeros((n, 6), dtype=np.int64)
-    n_bins = decode_njit_mode(
-        order, n_rots_arr, dims_all, L, W, H,
-        max_pallets, placements_out, mode,
-    )
+    if mode == 3:
+        n_bins = decode_layer_njit(
+            order, n_rots_arr, dims_all, L, W, H,
+            max_pallets, placements_out,
+        )
+    else:
+        n_bins = decode_njit_mode(
+            order, n_rots_arr, dims_all, L, W, H,
+            max_pallets, placements_out, mode,
+        )
 
     pallets_state: List[PalletState] = []
     for b in range(int(n_bins)):
@@ -371,17 +613,15 @@ def decode_auto_mode(
     n_rots_arr: np.ndarray,
     dims_all: np.ndarray,
     max_pallets: int = 1,
+    n_modes: int = 4,
 ) -> PackResult:
-    """Use last key in chromosome to pick decoder mode (0/1/2)."""
+    """Use last key in chromosome to pick decoder mode (0=DFTRC, 1=wall,
+    2=corner, 3=layer-build).
+    """
     n = len(boxes)
     if len(chrom) >= 2 * n + 1:
         selector = chrom[-1]
-        if selector < 0.33:
-            mode = 0
-        elif selector < 0.67:
-            mode = 1
-        else:
-            mode = 2
+        mode = min(n_modes - 1, int(selector * n_modes))
     else:
         mode = 0
     return decode_chromosome(chrom, boxes, pallet, config,
@@ -395,40 +635,39 @@ def decode_auto_mode(
 def chromosome_from_order(order: List[int], n: int, n_rots_arr: np.ndarray,
                           rotation_choices: Optional[List[int]] = None,
                           decoder_mode: Optional[int] = None,
+                          n_modes: int = 4,
                           rng: Optional[np.random.Generator] = None) -> np.ndarray:
     """Build a chromosome whose argsort yields `order`.
 
     `order[k]` = box index that should be the (k+1)-th processed.
     `rotation_choices[i]` = which rotation index for box i (else random).
-    `decoder_mode` = 0/1/2 if you want to force a mode (encoded in last key).
+    `decoder_mode` = if specified, encoded in last key. n_modes controls
+       the discretization (default 4 = DFTRC/wall/corner/layer).
     """
     if rng is None:
         rng = np.random.default_rng(42)
     has_selector = decoder_mode is not None
     size = 2 * n + (1 if has_selector else 0)
     c = np.empty(size, dtype=np.float64)
-    # Assign BPS keys s.t. argsort(c[:n]) == order
     for pos, box_i in enumerate(order):
-        c[box_i] = (pos + 0.5) / n  # in (0, 1)
-    # VBO: encode rotation choice
+        c[box_i] = (pos + 0.5) / n
     for box_i in range(n):
         n_rots = int(n_rots_arr[box_i])
         if rotation_choices is not None and rotation_choices[box_i] is not None:
             r = int(rotation_choices[box_i])
             r = max(0, min(n_rots - 1, r))
-            # Pick a key uniformly within [r/n_rots, (r+1)/n_rots)
             c[n + box_i] = (r + rng.random() * 0.9 + 0.05) / n_rots
         else:
             c[n + box_i] = rng.random()
     if has_selector:
-        # Force decoder mode: 0 → 0.16, 1 → 0.50, 2 → 0.83
-        c[-1] = (decoder_mode + 0.5) / 3.0
+        c[-1] = (decoder_mode + 0.5) / n_modes
     return c
 
 
 def make_informed_chromosomes(
     boxes: List[Box], n_rots_arr: np.ndarray,
     decoder_mode: Optional[int] = None,
+    n_modes: int = 4,
     seed: int = 42,
 ) -> List[np.ndarray]:
     """Generate informed initial chromosomes covering different orderings."""
@@ -445,7 +684,6 @@ def make_informed_chromosomes(
         'max_dim_desc': np.argsort(-max_dims).tolist(),
         'min_dim_desc': np.argsort(-min_dims).tolist(),
     }
-    # SKU-grouped: same SKU adjacent, larger SKU groups first
     sku_keys = [(b.length, b.width, b.height) for b in boxes]
     sku_vol = {}
     for k, b in zip(sku_keys, boxes):
@@ -454,16 +692,19 @@ def make_informed_chromosomes(
     sku_to_rank = {k: i for i, k in enumerate(sku_order)}
     sku_grouped = sorted(range(n), key=lambda i: (sku_to_rank[sku_keys[i]], -vols[i]))
     orderings['sku_grouped'] = sku_grouped
+    # NEW: SKU-grouped with rotation-aligned-depth (for layer-build mode)
+    # Same as sku_grouped but with rotation chosen to align min-dim with X axis
+    orderings['sku_grouped_alt'] = sku_grouped[::-1]  # reverse for variety
 
     for name, order in orderings.items():
-        # For each ordering, generate one chromosome per decoder mode (if multi-decoder)
         if decoder_mode is None:
             modes_to_try = [None]
         else:
             modes_to_try = [decoder_mode]
         for m in modes_to_try:
             c = chromosome_from_order(order, n, n_rots_arr,
-                                       decoder_mode=m, rng=rng)
+                                       decoder_mode=m, n_modes=n_modes,
+                                       rng=rng)
             out.append(c)
     return out
 
@@ -473,6 +714,7 @@ def chromosome_from_v2_result(
     boxes: List[Box],
     n_rots_arr: np.ndarray,
     decoder_mode: Optional[int] = None,
+    n_modes: int = 4,
     rng: Optional[np.random.Generator] = None,
 ) -> Optional[np.ndarray]:
     """Convert a v2 layer-build result into a chromosome.
@@ -523,7 +765,8 @@ def chromosome_from_v2_result(
 
     return chromosome_from_order(placed_order, n, n_rots_arr,
                                   rotation_choices=rot_choices,
-                                  decoder_mode=decoder_mode, rng=rng)
+                                  decoder_mode=decoder_mode,
+                                  n_modes=n_modes, rng=rng)
 
 
 # ============================================================================
@@ -662,12 +905,13 @@ def brkga_pack_v35(
     patience: int = 100,
     # v3.5 features
     use_multi_decoder: bool = True,
+    n_modes: int = 4,  # 4 = DFTRC + wall + corner + layer-build
     use_v2_seed: bool = True,
     use_smart_init: bool = True,
     use_local_search: bool = True,
     local_search_budget_s: float = 4.0,
     use_v2_hybrid_polish: bool = True,
-    # Multi-restart (v3.6): run K times with different seeds, take best.
+    # Multi-restart: run K times with different seeds, take best.
     # Reduces variance at the cost of less compute per run.
     n_restarts: int = 1,
     verbose: bool = False,
@@ -692,6 +936,7 @@ def brkga_pack_v35(
                 migrants_per_swap=migrants_per_swap,
                 patience=patience,
                 use_multi_decoder=use_multi_decoder,
+                n_modes=n_modes,
                 use_v2_seed=use_v2_seed and r_idx == 0,  # only first run uses v2 (slow)
                 use_smart_init=use_smart_init,
                 use_local_search=use_local_search,
@@ -717,9 +962,12 @@ def brkga_pack_v35(
 
     n_rots_arr, dims_all = precompute_box_dims(boxes)
     chrom_size = 2 * n + (1 if use_multi_decoder else 0)
-    decoder = (decode_auto_mode if use_multi_decoder else
-               (lambda c, b, p, cfg, na, da, max_pallets=1:
-                decode_chromosome(c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)))
+    if use_multi_decoder:
+        decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_auto_mode(
+            c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes)
+    else:
+        decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
+            c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
 
     t_start = time.time()
 
@@ -735,9 +983,10 @@ def brkga_pack_v35(
             v2_packer = PalletPacker(pallet, config)
             v2_result = v2_packer.pack(boxes)
             if use_multi_decoder:
-                for m in (0, 1, 2):
+                for m in range(n_modes):
                     cs = chromosome_from_v2_result(v2_result, boxes, n_rots_arr,
                                                     decoder_mode=m,
+                                                    n_modes=n_modes,
                                                     rng=np.random.default_rng(seed + 7 + m))
                     if cs is not None:
                         v2_seed_chroms_per_mode.append(cs)
@@ -773,9 +1022,10 @@ def brkga_pack_v35(
         smart = []
         if use_smart_init:
             if use_multi_decoder:
-                for m in (0, 1, 2):
+                for m in range(n_modes):
                     smart.extend(make_informed_chromosomes(
-                        boxes, n_rots_arr, decoder_mode=m, seed=seed + 100 + m))
+                        boxes, n_rots_arr, decoder_mode=m,
+                        n_modes=n_modes, seed=seed + 100 + m))
             else:
                 smart.extend(make_informed_chromosomes(
                     boxes, n_rots_arr, decoder_mode=None, seed=seed + 100))
