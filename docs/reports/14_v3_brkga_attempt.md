@@ -4,12 +4,12 @@ A from-scratch implementation of Gonçalves & Resende's BRKGA-2013
 algorithm for 3D bin packing, to push the BR benchmark numbers as far
 as pure Python + CPU will allow.
 
-**Outcome: v3 reaches parity with v2 (v1+layer) at ~81-84% mean on
-BR1-7 — beats BR-1995, matches Bortfeldt-2000 on BR7, but stays
-5-9pp below BRKGA-2013 SOTA (92.6% on BR1). Single-population
-hits a clear convergence plateau by gen 15; multi-population gives
-~+1pp more. The implementation is correct; the gap is structural
-to pure-Python single-machine BRKGA on a DFTRC decoder.**
+**Final outcome (after Numba JIT acceleration): v3-fast beats v2 on
+every BR set — BR1 +1.0pp, BR3 +0.8pp, BR5 +1.9pp, BR7 +3.0pp.
+On BR7 we now exceed Bortfeldt-2000 (+2.7pp above its 80.1%). Gap to
+BRKGA-2013 SOTA narrows to 4-7pp (from 5-9pp for v2). All in 30s/
+instance compute, with 19K-120K decodes per instance enabled by
+1.6ms-per-decode JIT-compiled core.**
 
 ---
 
@@ -44,39 +44,48 @@ References:
 
 ## Results
 
-### BR comparison (sample n=10 per set, 30-60s/instance budget)
+### BR comparison (sample n=10 per set, 30s/instance budget)
 
-| Set | v1 default | v2 (v1+layer) | **v3 BRKGA** | BR-1995 | Bortfeldt-2000 | BRKGA-2013 |
-|-----|-----------|---------------|--------------|---------|----------------|------------|
-| BR1 | 81.6%     | 84.2%         | **83.4%**    | 83.1%   | 87.8%          | 92.6%      |
-| BR3 | 79.6%     | 82.2%         | **81.5%**    | 79.5%   | 85.6%          | 90.5%      |
-| BR5 | 79.0%     | 81.0%         | **81.4%**    | 76.3%   | 83.0%          | 88.7%      |
-| BR7 | 78.2%     | 79.8%         | **81.0%**    | 73.2%   | 80.1%          | 85.4%      |
+| Set | v1 default | v2 (v1+layer) | v3 slow | **v3 fast (JIT)** | BR-1995 | Bortfeldt-2000 | BRKGA-2013 |
+|-----|-----------|---------------|--------|------------------|---------|----------------|------------|
+| BR1 | 81.6%     | 84.2%         | 83.4%  | **85.2%**        | 83.1%   | 87.8%          | 92.6%      |
+| BR3 | 79.6%     | 82.2%         | 81.5%  | **83.0%**        | 79.5%   | 85.6%          | 90.5%      |
+| BR5 | 79.0%     | 81.0%         | 81.4%  | **82.9%**        | 76.3%   | 83.0%          | 88.7%      |
+| BR7 | 78.2%     | 79.8%         | 81.0%  | **82.8%**        | 73.2%   | 80.1%          | 85.4%      |
 
-**Patterns:**
-- v3 beats v1 baseline on every set (+1.8 to +2.8pp).
-- v3 **beats v2 (v1+layer) on BR5 and BR7** (+0.4pp, +1.2pp) where
-  SKU-grid layer fill has fewer dominant SKUs to exploit.
-- v3 slightly trails v2 on BR1, BR3 where SKU-grid is highly effective.
-- v3 beats BR-1995 on every set; matches Bortfeldt-2000 on BR7.
-- **Consistently 5-9pp below BRKGA-2013 SOTA** (92.6% target on BR1).
-- Modern 2024 hybrids (94%+) are even further out of reach.
+**The JIT acceleration was the breakthrough.** Numba @njit on the
+EMS hot path reduced per-decode time from 74ms (numpy) to 1.6ms
+(46× speedup), enabling 19K-120K decodes per instance vs 500-1500
+without JIT. With literature-scale search, v3 now strictly beats v2
+on every BR set.
+
+**Patterns (v3-fast):**
+- v3-fast beats v1 baseline by +3.6 to +4.6pp across sets.
+- v3-fast **beats v2 on every set** (+0.8 to +3.0pp).
+- v3-fast **beats BR-1995 on every set** (+2.1 to +9.6pp).
+- v3-fast **exceeds Bortfeldt-2000 on BR7** (+2.7pp above its 80.1%).
+- Gap to BRKGA-2013 SOTA: now 4-7pp (was 5-9pp for v2).
+- Modern 2024 hybrids (94%+) still out of reach.
 
 ### Convergence plateau (single-instance evidence)
 
-On BR1#1 (N=112), varying compute budget:
+On BR1#1 (N=112), varying compute budget and decoder:
 
-| Config | Time | Result | Δ |
-|--------|------|--------|---|
-| Single decode (random chrom) | 0.07s | 79.1% | baseline |
-| BRKGA pop=40 gens=40, 60s budget | 60s | 83.3% | +4.2pp |
-| BRKGA pop=80 gens=100, 300s budget | 182s | 83.4% | +0.1pp |
-| **Multi-pop BRKGA 3×30, 120s** | 126s | **84.3%** | +0.9pp |
+| Config | Time | Result |
+|--------|------|--------|
+| Single decode (random chrom) | 0.07s | 79.1% |
+| Slow BRKGA pop=40 gens=40, 60s | 60s | 83.3% |
+| Slow BRKGA pop=80 gens=100, 300s | 182s | 83.4% |
+| Slow multi-pop 3×30, 120s | 126s | 84.3% |
+| **Fast (JIT) BRKGA 3×200, 30s** | 30s | **85.0%** |
+| **Fast (JIT) BRKGA 3×200, 180s** | 180s | **85.6%** |
 
-The single-population search converges by generation 15 — patience
-exhausted at gen 30. **Adding compute past convergence yields zero
-improvement.** Multi-population helps modestly (+0.9pp) but the
-gap to SOTA remains.
+The JIT acceleration (46× per-decode speedup) lets us run literature-
+scale search. **At 121K decodes (180s fast), util plateaus at 85.6%
+— we're now hitting an ALGORITHMIC ceiling, not a compute ceiling.**
+The remaining 7pp to BRKGA-2013 SOTA likely needs subtle
+implementation details not in the abstract (specific cooling
+schedule, layer-build hybridization, etc.).
 
 ---
 

@@ -1,0 +1,322 @@
+[
+ {
+  "set_id": "BR1",
+  "instance_id": 1,
+  "n_boxes": 112,
+  "util_pallet1": 0.8468797545465845,
+  "runtime_s": 30.369866132736206,
+  "validator_errors": 45
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 2,
+  "n_boxes": 138,
+  "util_pallet1": 0.9261797589999475,
+  "runtime_s": 30.63796305656433,
+  "validator_errors": 42
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 3,
+  "n_boxes": 127,
+  "util_pallet1": 0.808140814008286,
+  "runtime_s": 30.285093069076538,
+  "validator_errors": 71
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 4,
+  "n_boxes": 197,
+  "util_pallet1": 0.8607577629760695,
+  "runtime_s": 30.197057008743286,
+  "validator_errors": 56
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 5,
+  "n_boxes": 136,
+  "util_pallet1": 0.8319593600716793,
+  "runtime_s": 30.99267578125,
+  "validator_errors": 65
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 6,
+  "n_boxes": 147,
+  "util_pallet1": 0.8557196800757204,
+  "runtime_s": 31.161679983139038,
+  "validator_errors": 57
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 7,
+  "n_boxes": 126,
+  "util_pallet1": 0.855633869753091,
+  "runtime_s": 30.002530097961426,
+  "validator_errors": 42
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 8,
+  "n_boxes": 180,
+  "util_pallet1": 0.8733154489820742,
+  "runtime_s": 33.15996289253235,
+  "validator_errors": 74
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 9,
+  "n_boxes": 101,
+  "util_pallet1": 0.810889801865228,
+  "runtime_s": 30.175990104675293,
+  "validator_errors": 44
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 10,
+  "n_boxes": 130,
+  "util_pallet1": 0.848377613276605,
+  "runtime_s": 30.605702877044678,
+  "validator_errors": 60
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 1,
+  "n_boxes": 94,
+  "util_pallet1": 0.8414323610600599,
+  "runtime_s": 30.294729948043823,
+  "validator_errors": 43
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 2,
+  "n_boxes": 115,
+  "util_pallet1": 0.8660615853573425,
+  "runtime_s": 30.00438904762268,
+  "validator_errors": 48
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 3,
+  "n_boxes": 143,
+  "util_pallet1": 0.805139978504215,
+  "runtime_s": 32.40058708190918,
+  "validator_errors": 78
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 4,
+  "n_boxes": 185,
+  "util_pallet1": 0.8278143758545305,
+  "runtime_s": 36.9036648273468,
+  "validator_errors": 98
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 5,
+  "n_boxes": 113,
+  "util_pallet1": 0.8315369220349077,
+  "runtime_s": 30.143317937850952,
+  "validator_errors": 56
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 6,
+  "n_boxes": 143,
+  "util_pallet1": 0.8267816609182834,
+  "runtime_s": 30.10699486732483,
+  "validator_errors": 76
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 7,
+  "n_boxes": 144,
+  "util_pallet1": 0.8256032478974477,
+  "runtime_s": 32.5929319858551,
+  "validator_errors": 81
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 8,
+  "n_boxes": 104,
+  "util_pallet1": 0.8482028686304447,
+  "runtime_s": 30.226412057876587,
+  "validator_errors": 44
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 9,
+  "n_boxes": 133,
+  "util_pallet1": 0.8196840638067214,
+  "runtime_s": 32.94371294975281,
+  "validator_errors": 69
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 10,
+  "n_boxes": 180,
+  "util_pallet1": 0.8058460027079105,
+  "runtime_s": 36.88220000267029,
+  "validator_errors": 98
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 1,
+  "n_boxes": 98,
+  "util_pallet1": 0.8357176993262129,
+  "runtime_s": 30.400328874588013,
+  "validator_errors": 52
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 2,
+  "n_boxes": 138,
+  "util_pallet1": 0.850650024825837,
+  "runtime_s": 31.814433097839355,
+  "validator_errors": 69
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 3,
+  "n_boxes": 133,
+  "util_pallet1": 0.8120100885288681,
+  "runtime_s": 32.44950294494629,
+  "validator_errors": 70
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 4,
+  "n_boxes": 142,
+  "util_pallet1": 0.8304137440087312,
+  "runtime_s": 31.528993844985962,
+  "validator_errors": 72
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 5,
+  "n_boxes": 129,
+  "util_pallet1": 0.8401867155517417,
+  "runtime_s": 31.790488958358765,
+  "validator_errors": 56
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 6,
+  "n_boxes": 140,
+  "util_pallet1": 0.8242013691100121,
+  "runtime_s": 31.65785813331604,
+  "validator_errors": 74
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 7,
+  "n_boxes": 132,
+  "util_pallet1": 0.8200334201628335,
+  "runtime_s": 30.969456911087036,
+  "validator_errors": 61
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 8,
+  "n_boxes": 98,
+  "util_pallet1": 0.8218084508877148,
+  "runtime_s": 30.89315104484558,
+  "validator_errors": 50
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 9,
+  "n_boxes": 135,
+  "util_pallet1": 0.8294945233605476,
+  "runtime_s": 32.33740711212158,
+  "validator_errors": 75
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 10,
+  "n_boxes": 133,
+  "util_pallet1": 0.8261422377550797,
+  "runtime_s": 30.602787971496582,
+  "validator_errors": 72
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 1,
+  "n_boxes": 110,
+  "util_pallet1": 0.8378478026641746,
+  "runtime_s": 31.832666873931885,
+  "validator_errors": 60
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 2,
+  "n_boxes": 129,
+  "util_pallet1": 0.8426321435764227,
+  "runtime_s": 34.65248489379883,
+  "validator_errors": 71
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 3,
+  "n_boxes": 126,
+  "util_pallet1": 0.8137643479711608,
+  "runtime_s": 31.596180200576782,
+  "validator_errors": 65
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 4,
+  "n_boxes": 153,
+  "util_pallet1": 0.8440527663692662,
+  "runtime_s": 32.17043995857239,
+  "validator_errors": 91
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 5,
+  "n_boxes": 126,
+  "util_pallet1": 0.8274794763111,
+  "runtime_s": 30.802667140960693,
+  "validator_errors": 69
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 6,
+  "n_boxes": 156,
+  "util_pallet1": 0.82808749329503,
+  "runtime_s": 33.7620689868927,
+  "validator_errors": 87
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 7,
+  "n_boxes": 109,
+  "util_pallet1": 0.826398206424674,
+  "runtime_s": 33.178975105285645,
+  "validator_errors": 53
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 8,
+  "n_boxes": 119,
+  "util_pallet1": 0.8275084896386196,
+  "runtime_s": 31.76552104949951,
+  "validator_errors": 59
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 9,
+  "n_boxes": 129,
+  "util_pallet1": 0.8183751406631257,
+  "runtime_s": 31.745938062667847,
+  "validator_errors": 70
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 10,
+  "n_boxes": 135,
+  "util_pallet1": 0.8166113098138162,
+  "runtime_s": 34.29399013519287,
+  "validator_errors": 71
+ }
+]

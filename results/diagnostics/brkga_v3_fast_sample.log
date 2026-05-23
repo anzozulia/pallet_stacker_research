@@ -1,0 +1,19 @@
+Fast BRKGA-v3: pop=600/3pops, gens=300, time=30.0s/instance
+
+=== thpack1 (10 inst) ===
+  BR1: n=10 mean=85.2% stdev=3.4 elapsed=308s
+
+=== thpack3 (10 inst) ===
+  BR3: n=10 mean=83.0% stdev=1.9 elapsed=323s
+
+=== thpack5 (10 inst) ===
+  BR5: n=10 mean=82.9% stdev=1.1 elapsed=314s
+
+=== thpack7 (10 inst) ===
+  BR7: n=10 mean=82.8% stdev=1.1 elapsed=326s
+
+=== Fast BRKGA-v3 Summary ===
+BR1: n= 10 mean= 85.2% stdev=3.4
+BR3: n= 10 mean= 83.0% stdev=1.9
+BR5: n= 10 mean= 82.9% stdev=1.1
+BR7: n= 10 mean= 82.8% stdev=1.1
