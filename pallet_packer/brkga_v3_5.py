@@ -1100,6 +1100,7 @@ def decode_chromosome(
     max_pallets: int = 1,
     sku_id_per_box: Optional[np.ndarray] = None,
     sku_best_block: Optional[np.ndarray] = None,
+    sku_top_k_blocks: Optional[np.ndarray] = None,
 ) -> PackResult:
     """Decode chromosome with chosen mode.
 
@@ -1109,8 +1110,9 @@ def decode_chromosome(
       2 = corner-fill
       3 = layer-build
       4 = DFTRC + dynamic composite blocks (needs sku_id_per_box)
-      5 = DFTRC + pre-computed best block per SKU (needs sku_id_per_box,
-          sku_best_block)
+      5 = DFTRC + pre-computed top-K blocks (chromosome picks one of K
+          candidates per SKU via VBO keys; needs sku_id_per_box and
+          either sku_top_k_blocks or sku_best_block)
     """
     n = len(boxes)
     if n == 0:
@@ -1141,25 +1143,33 @@ def decode_chromosome(
                 L, W, H, max_pallets, placements_out, n_skus,
             )
     elif mode == 5:
-        if sku_id_per_box is None or sku_best_block is None:
-            # Fall back to mode 4 (dynamic blocks)
-            if sku_id_per_box is None:
-                n_bins = decode_njit_mode(
-                    order, n_rots_arr, dims_all, L, W, H,
-                    max_pallets, placements_out, 0,
+        if sku_id_per_box is None:
+            n_bins = decode_njit_mode(
+                order, n_rots_arr, dims_all, L, W, H,
+                max_pallets, placements_out, 0,
+            )
+        else:
+            n_skus = int(sku_id_per_box.max()) + 1
+            # Resolve per-SKU block: prefer top-K via chromosome, else
+            # fixed top-1 (sku_best_block), else fall back to mode 4
+            if sku_top_k_blocks is not None:
+                chosen = resolve_sku_blocks_from_chrom(
+                    chrom, n, n_skus, sku_top_k_blocks)
+                n_bins = decode_precomputed_blocks_njit_mode(
+                    order, n_rots_arr, dims_all, sku_id_per_box, chosen,
+                    L, W, H, max_pallets, placements_out, n_skus,
+                )
+            elif sku_best_block is not None:
+                n_bins = decode_precomputed_blocks_njit_mode(
+                    order, n_rots_arr, dims_all, sku_id_per_box,
+                    sku_best_block,
+                    L, W, H, max_pallets, placements_out, n_skus,
                 )
             else:
-                n_skus = int(sku_id_per_box.max()) + 1
                 n_bins = decode_blocks_njit_mode(
                     order, n_rots_arr, dims_all, sku_id_per_box,
                     L, W, H, max_pallets, placements_out, n_skus,
                 )
-        else:
-            n_skus = int(sku_id_per_box.max()) + 1
-            n_bins = decode_precomputed_blocks_njit_mode(
-                order, n_rots_arr, dims_all, sku_id_per_box, sku_best_block,
-                L, W, H, max_pallets, placements_out, n_skus,
-            )
     else:
         n_bins = decode_njit_mode(
             order, n_rots_arr, dims_all, L, W, H,
@@ -1199,9 +1209,10 @@ def decode_auto_mode(
     n_modes: int = 5,
     sku_id_per_box: Optional[np.ndarray] = None,
     sku_best_block: Optional[np.ndarray] = None,
+    sku_top_k_blocks: Optional[np.ndarray] = None,
 ) -> PackResult:
     """Use last key in chromosome to pick decoder mode (0..n_modes-1).
-    Mode 5 (if n_modes >= 6) uses pre-computed blocks.
+    Mode 5 (if n_modes >= 6) uses pre-computed top-K blocks per SKU.
     """
     n = len(boxes)
     if len(chrom) >= 2 * n + 1:
@@ -1212,7 +1223,8 @@ def decode_auto_mode(
     return decode_chromosome(chrom, boxes, pallet, config,
                              n_rots_arr, dims_all, mode, max_pallets,
                              sku_id_per_box=sku_id_per_box,
-                             sku_best_block=sku_best_block)
+                             sku_best_block=sku_best_block,
+                             sku_top_k_blocks=sku_top_k_blocks)
 
 
 # ============================================================================
@@ -1615,6 +1627,113 @@ def lns_polish(
 # of hundreds for the 225-key box-level chromosome.
 # ============================================================================
 
+def enumerate_top_k_blocks_per_sku(
+    boxes: List[Box],
+    sku_id_per_box: np.ndarray,
+    n_rots_arr: np.ndarray,
+    dims_all: np.ndarray,
+    L: int, W: int, H: int,
+    k_top: int = 8,
+) -> np.ndarray:
+    """For each SKU, enumerate top-K candidate (k, l, m, rotation) blocks.
+
+    Returns (n_skus, k_top, 4) int64. Each SKU has up to k_top distinct
+    block shapes, sorted by box count descending (largest first).
+    Singleton/missing entries padded with (1, 1, 1, 0).
+
+    Blocks differ by COUNT (k*l*m): top-1 is biggest, top-2 is next, etc.
+    Letting BRKGA pick which block per SKU avoids the "too greedy" failure
+    of always using top-1.
+    """
+    n_skus = int(sku_id_per_box.max()) + 1 if len(sku_id_per_box) > 0 else 0
+    top_k = np.zeros((n_skus, k_top, 4), dtype=np.int64)
+    top_k[:, :, 0] = 1  # default (1,1,1,0)
+    top_k[:, :, 1] = 1
+    top_k[:, :, 2] = 1
+    top_k[:, :, 3] = 0
+    sku_groups = [[] for _ in range(n_skus)]
+    for i in range(len(boxes)):
+        sku_groups[int(sku_id_per_box[i])].append(i)
+    for sku in range(n_skus):
+        idxs = sku_groups[sku]
+        if len(idxs) < 2:
+            continue
+        sample = idxs[0]
+        count = len(idxs)
+        n_rots = int(n_rots_arr[sample])
+        # Enumerate all (k, l, m, rot) candidates
+        candidates = []
+        for r in range(n_rots):
+            dx = int(dims_all[sample, r, 0])
+            dy = int(dims_all[sample, r, 1])
+            dz = int(dims_all[sample, r, 2])
+            if dx <= 0 or dy <= 0 or dz <= 0:
+                continue
+            max_k = min(L // dx, count)
+            max_l = min(W // dy, count)
+            max_m = min(H // dz, count)
+            for k in range(1, max_k + 1):
+                if k > count:
+                    break
+                for l in range(1, max_l + 1):
+                    if k * l > count:
+                        break
+                    for m in range(1, max_m + 1):
+                        n = k * l * m
+                        if n > count:
+                            break
+                        if n < 2:
+                            continue
+                        candidates.append((n, k, l, m, r))
+        # Sort by count desc, dedupe by count (keep one per count)
+        candidates.sort(key=lambda c: -c[0])
+        seen_counts = set()
+        unique = []
+        for c in candidates:
+            if c[0] in seen_counts:
+                continue
+            seen_counts.add(c[0])
+            unique.append(c)
+            if len(unique) >= k_top:
+                break
+        for i, (n, k, l, m, r) in enumerate(unique):
+            top_k[sku, i, 0] = k
+            top_k[sku, i, 1] = l
+            top_k[sku, i, 2] = m
+            top_k[sku, i, 3] = r
+        # Fill remaining slots with the smallest available (or default)
+        for i in range(len(unique), k_top):
+            if unique:
+                top_k[sku, i] = top_k[sku, len(unique) - 1]
+    return top_k
+
+
+def resolve_sku_blocks_from_chrom(
+    chrom: np.ndarray,
+    n_boxes: int,
+    n_skus: int,
+    top_k_blocks: np.ndarray,
+) -> np.ndarray:
+    """Pick one (k, l, m, rot) block per SKU based on chromosome.
+
+    Uses chrom[n_boxes + sku] (first S keys of VBO portion) as selector.
+    These VBO keys are unused by JIT decoders (rotation is chosen during
+    placement), so repurposing them for SKU block selection is safe.
+
+    Returns (n_skus, 4) int64.
+    """
+    k_top = top_k_blocks.shape[1]
+    chosen = np.zeros((n_skus, 4), dtype=np.int64)
+    for s in range(n_skus):
+        if n_boxes + s < len(chrom):
+            key = chrom[n_boxes + s]
+        else:
+            key = 0.0
+        idx = min(k_top - 1, max(0, int(key * k_top)))
+        chosen[s] = top_k_blocks[s, idx]
+    return chosen
+
+
 def enumerate_best_block_per_sku(
     boxes: List[Box],
     sku_id_per_box: np.ndarray,
@@ -1939,11 +2058,14 @@ def brkga_pack_v35(
     H = int(round(pallet.height))
     sku_best_block = enumerate_best_block_per_sku(
         boxes, sku_id_per_box, n_rots_arr, dims_all, L, W, H)
+    sku_top_k_blocks = enumerate_top_k_blocks_per_sku(
+        boxes, sku_id_per_box, n_rots_arr, dims_all, L, W, H, k_top=8)
     chrom_size = 2 * n + (1 if use_multi_decoder else 0)
     if use_multi_decoder:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_auto_mode(
             c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes,
-            sku_id_per_box=sku_id_per_box, sku_best_block=sku_best_block)
+            sku_id_per_box=sku_id_per_box, sku_best_block=sku_best_block,
+            sku_top_k_blocks=sku_top_k_blocks)
     else:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
             c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
