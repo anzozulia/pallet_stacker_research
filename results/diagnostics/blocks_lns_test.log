@@ -1,0 +1,92 @@
+BR sets test: 5 inst/set, 30s/inst, 3 configs
+config               set   inst   util%   time
+--------------------------------------------------
+baseline_4modes      BR1      1  90.12  30.1s
+baseline_4modes      BR1      2  91.79  30.4s
+baseline_4modes      BR1      3  85.47  30.4s
+baseline_4modes      BR1      4  88.39  30.7s
+baseline_4modes      BR1      5  87.95  30.3s
+  → baseline_4modes/BR1 mean=88.74% stdev=2.38
+blocks_5modes        BR1      1  90.21  30.0s
+blocks_5modes        BR1      2  91.36  30.5s
+blocks_5modes        BR1      3  84.83  30.0s
+blocks_5modes        BR1      4  86.91  30.3s
+blocks_5modes        BR1      5  90.95  30.1s
+  → blocks_5modes/BR1 mean=88.85% stdev=2.85
+blocks+lns           BR1      1  90.21  30.1s
+blocks+lns           BR1      2  91.35  30.4s
+blocks+lns           BR1      3  84.83  30.0s
+blocks+lns           BR1      4  86.91  30.4s
+blocks+lns           BR1      5  90.95  30.0s
+  → blocks+lns/BR1 mean=88.85% stdev=2.85
+baseline_4modes      BR3      1  90.09  30.3s
+baseline_4modes      BR3      2  92.21  30.2s
+baseline_4modes      BR3      3  87.37  31.3s
+baseline_4modes      BR3      4  86.31  34.6s
+baseline_4modes      BR3      5  89.48  31.2s
+  → baseline_4modes/BR3 mean=89.09% stdev=2.32
+blocks_5modes        BR3      1  91.08  30.0s
+blocks_5modes        BR3      2  92.94  30.1s
+blocks_5modes        BR3      3  92.79  30.1s
+blocks_5modes        BR3      4  91.99  30.9s
+blocks_5modes        BR3      5  91.37  30.3s
+  → blocks_5modes/BR3 mean=92.03% stdev=0.83
+blocks+lns           BR3      1  91.08  30.0s
+blocks+lns           BR3      2  92.94  30.4s
+blocks+lns           BR3      3  92.79  30.3s
+blocks+lns           BR3      4  92.67  30.4s
+blocks+lns           BR3      5  91.37  30.1s
+  → blocks+lns/BR3 mean=92.17% stdev=0.88
+baseline_4modes      BR5      1  88.97  31.5s
+baseline_4modes      BR5      2  89.67  33.6s
+baseline_4modes      BR5      3  85.29  33.6s
+baseline_4modes      BR5      4  87.90  32.8s
+baseline_4modes      BR5      5  89.33  31.3s
+  → baseline_4modes/BR5 mean=88.23% stdev=1.78
+blocks_5modes        BR5      1  90.85  30.2s
+blocks_5modes        BR5      2  92.84  30.3s
+blocks_5modes        BR5      3  91.61  30.2s
+blocks_5modes        BR5      4  93.08  30.2s
+blocks_5modes        BR5      5  93.84  30.1s
+  → blocks_5modes/BR5 mean=92.44% stdev=1.20
+blocks+lns           BR5      1  90.85  30.0s
+blocks+lns           BR5      2  93.00  30.5s
+blocks+lns           BR5      3  92.45  30.5s
+blocks+lns           BR5      4  93.12  30.4s
+blocks+lns           BR5      5  93.27  30.5s
+  → blocks+lns/BR5 mean=92.54% stdev=0.99
+baseline_4modes      BR7      1  88.65  31.8s
+baseline_4modes      BR7      2  88.72  34.1s
+baseline_4modes      BR7      3  86.13  32.8s
+baseline_4modes      BR7      4  87.06  31.0s
+baseline_4modes      BR7      5  85.41  32.5s
+  → baseline_4modes/BR7 mean=87.19% stdev=1.48
+blocks_5modes        BR7      1  91.82  30.4s
+blocks_5modes        BR7      2  93.09  30.1s
+blocks_5modes        BR7      3  92.07  30.6s
+blocks_5modes        BR7      4  94.29  30.7s
+blocks_5modes        BR7      5  91.86  30.1s
+  → blocks_5modes/BR7 mean=92.63% stdev=1.07
+blocks+lns           BR7      1  91.90  30.4s
+blocks+lns           BR7      2  93.26  30.4s
+blocks+lns           BR7      3  92.34  30.2s
+blocks+lns           BR7      4  93.50  30.7s
+blocks+lns           BR7      5  92.86  30.4s
+  → blocks+lns/BR7 mean=92.77% stdev=0.66
+
+=== Summary ===
+set     baseline_4modes     blocks_5modes        blocks+lns
+BR1               88.74%             88.85%             88.85%
+BR3               89.09%             92.03%             92.17%
+BR5               88.23%             92.44%             92.54%
+BR7               87.19%             92.63%             92.77%
+
+=== Deltas vs baseline ===
+  BR1 blocks_5modes: +0.11pp
+  BR1 blocks+lns: +0.11pp
+  BR3 blocks_5modes: +2.94pp
+  BR3 blocks+lns: +3.08pp
+  BR5 blocks_5modes: +4.21pp
+  BR5 blocks+lns: +4.31pp
+  BR7 blocks_5modes: +5.43pp
+  BR7 blocks+lns: +5.58pp

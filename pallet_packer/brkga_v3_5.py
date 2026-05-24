@@ -35,6 +35,28 @@ from .brkga_v3_fast import (
 )
 
 
+def precompute_box_dims_and_sku(boxes: List[Box]) -> tuple:
+    """Extended precompute: also returns sku_id_per_box for block extension.
+
+    SKU is keyed by (length, width, height, weight, allowed-rotation set).
+    Boxes with same SKU can be packed as a composite block.
+    """
+    n = len(boxes)
+    n_rots_arr, dims_all = precompute_box_dims(boxes)
+    sku_id_per_box = np.zeros(n, dtype=np.int64)
+    sku_to_id: dict = {}
+    for i, b in enumerate(boxes):
+        # Key ignores rotation flags - same SKU = same dimensions + weight
+        # plus same rotation set (so rotations match in the block)
+        rot_key = tuple(sorted(r.name for r in b.allowed_rotations))
+        key = (round(b.length, 6), round(b.width, 6), round(b.height, 6),
+               round(b.weight, 6), rot_key)
+        if key not in sku_to_id:
+            sku_to_id[key] = len(sku_to_id)
+        sku_id_per_box[i] = sku_to_id[key]
+    return n_rots_arr, dims_all, sku_id_per_box
+
+
 # ============================================================================
 # JIT primitives
 # ============================================================================
@@ -351,6 +373,254 @@ def decode_layer_njit(
 
 
 @njit(cache=True, fastmath=True)
+def find_best_block_at_pos_njit(
+    emss: np.ndarray, n_ems: int,
+    x: int, y: int, z: int,
+    dx: int, dy: int, dz: int,
+    max_count: int,
+) -> tuple:
+    """Find largest (k, l, m) composite block at position (x, y, z) with
+    box dims (dx, dy, dz), constrained by:
+      - block region must fit in some EMS that already contains the single box
+      - k * l * m <= max_count (available same-SKU boxes)
+
+    Returns (best_k, best_l, best_m). Always returns >= (1, 1, 1).
+
+    The algorithm exploits the EMS invariant: any free region [x..x+kdx,
+    y..y+ldy, z..z+mdz] must be entirely contained in some single EMS that
+    also contains the box at (x, y, z). So we iterate over candidate EMSs
+    and within each find the max (k, l, m) that fits AND respects max_count.
+    """
+    best_k = 1
+    best_l = 1
+    best_m = 1
+    best_count = 1
+    for ei in range(n_ems):
+        ex_min = emss[ei, 0, 0]
+        ey_min = emss[ei, 0, 1]
+        ez_min = emss[ei, 0, 2]
+        ex_max = emss[ei, 1, 0]
+        ey_max = emss[ei, 1, 1]
+        ez_max = emss[ei, 1, 2]
+        # Skip EMS that doesn't contain the single-box placement
+        if ex_min > x or ey_min > y or ez_min > z:
+            continue
+        if ex_max < x + dx or ey_max < y + dy or ez_max < z + dz:
+            continue
+        # Max block dims within this EMS, capped by available count
+        max_k = min((ex_max - x) // dx, max_count)
+        max_l = (ey_max - y) // dy
+        max_m = (ez_max - z) // dz
+        if max_k < 1 or max_l < 1 or max_m < 1:
+            continue
+        # Enumerate (k, l, m). The triple loop is at most max_count
+        # iterations after the count guard kicks in.
+        for k in range(1, max_k + 1):
+            if k > max_count:
+                break
+            for l in range(1, max_l + 1):
+                if k * l > max_count:
+                    break
+                for m in range(1, max_m + 1):
+                    count = k * l * m
+                    if count > max_count:
+                        break
+                    if count > best_count:
+                        best_count = count
+                        best_k = k
+                        best_l = l
+                        best_m = m
+    return best_k, best_l, best_m
+
+
+@njit(cache=True, fastmath=True)
+def decode_blocks_njit_mode(
+    bps_order: np.ndarray,
+    n_rots_per_box: np.ndarray,
+    dims_all: np.ndarray,
+    sku_id_per_box: np.ndarray,
+    L: int, W: int, H: int,
+    max_pallets: int,
+    placements_out: np.ndarray,
+    n_skus: int,
+) -> int:
+    """Decode with composite block extension (Bischoff-Ratcliff 1995).
+
+    Two-phase placement:
+      Phase 1: Find DFTRC placement for single box (across rotations).
+               This gives a position favored by DFTRC's "tuck into corner"
+               heuristic, which leaves the pallet open for future blocks.
+      Phase 2: At the chosen position+rotation, extend to a (k, l, m) block
+               of same-SKU unplaced boxes (find_best_block_at_pos_njit
+               returns max k*l*m fitting in any EMS containing the position).
+
+    Why DFTRC-then-extend (not block-aware DFTRC): block-aware placement
+    is too greedy — it picks positions maximizing one block's count, but
+    those positions often waste space for subsequent blocks. DFTRC keeps
+    the pallet "wall-like" globally, which works much better in practice.
+
+    Block extension makes huge gains on homogeneous loads (BR1, BR3).
+    For heterogeneous loads (BR7) it degenerates to k=l=m=1 with no
+    measurable overhead.
+    """
+    n = bps_order.shape[0]
+    MAX_BINS = max_pallets if max_pallets > 0 else 32
+    bin_emss = np.zeros((MAX_BINS, MAX_EMS, 2, 3), dtype=np.int64)
+    bin_ems_count = np.zeros(MAX_BINS, dtype=np.int64)
+    n_bins = 0
+    scratch = np.zeros((MAX_EMS, 2, 3), dtype=np.int64)
+    placed = np.zeros(n, dtype=np.int64)  # 1 if box already placed (via block or single)
+
+    # Count remaining boxes per SKU
+    sku_remaining = np.zeros(n_skus, dtype=np.int64)
+    for i in range(n):
+        box_idx = bps_order[i]
+        sku_remaining[sku_id_per_box[box_idx]] += 1
+
+    for i in range(n):
+        if placed[i] == 1:
+            continue
+        box_idx = bps_order[i]
+        my_sku = sku_id_per_box[box_idx]
+        n_rots = n_rots_per_box[box_idx]
+        max_count = sku_remaining[my_sku]
+
+        # --- Phase 1: DFTRC placement (existing bins) ---
+        best_bin = -1
+        best_rot = -1
+        best_x = 0
+        best_y = 0
+        best_z = 0
+        best_score = -1
+        for b in range(n_bins):
+            for r in range(n_rots):
+                dx = dims_all[box_idx, r, 0]
+                dy = dims_all[box_idx, r, 1]
+                dz = dims_all[box_idx, r, 2]
+                idx, x, y, z = find_best_dftrc_njit(
+                    bin_emss[b], bin_ems_count[b], dx, dy, dz, L, W, H)
+                if idx < 0:
+                    continue
+                score = ((L - x - dx) * (L - x - dx)
+                         + (W - y - dy) * (W - y - dy)
+                         + (H - z - dz) * (H - z - dz))
+                if score > best_score:
+                    best_score = score
+                    best_bin = b
+                    best_rot = r
+                    best_x, best_y, best_z = x, y, z
+            if best_bin >= 0:
+                break
+
+        # --- Phase 2: open new bin if no fit ---
+        if best_bin < 0:
+            if n_bins >= MAX_BINS:
+                placements_out[i, 5] = 0
+                placed[i] = 1
+                sku_remaining[my_sku] -= 1
+                continue
+            bin_emss[n_bins, 0, 0, 0] = 0
+            bin_emss[n_bins, 0, 0, 1] = 0
+            bin_emss[n_bins, 0, 0, 2] = 0
+            bin_emss[n_bins, 0, 1, 0] = L
+            bin_emss[n_bins, 0, 1, 1] = W
+            bin_emss[n_bins, 0, 1, 2] = H
+            bin_ems_count[n_bins] = 1
+            best_rot_n = -1
+            best_score_n = -1
+            best_x_n = 0
+            best_y_n = 0
+            best_z_n = 0
+            for r in range(n_rots):
+                dx = dims_all[box_idx, r, 0]
+                dy = dims_all[box_idx, r, 1]
+                dz = dims_all[box_idx, r, 2]
+                idx, x, y, z = find_best_dftrc_njit(
+                    bin_emss[n_bins], bin_ems_count[n_bins], dx, dy, dz, L, W, H)
+                if idx < 0:
+                    continue
+                score = ((L - x - dx) * (L - x - dx)
+                         + (W - y - dy) * (W - y - dy)
+                         + (H - z - dz) * (H - z - dz))
+                if score > best_score_n:
+                    best_score_n = score
+                    best_rot_n = r
+                    best_x_n, best_y_n, best_z_n = x, y, z
+            if best_rot_n < 0:
+                placements_out[i, 5] = 0
+                placed[i] = 1
+                sku_remaining[my_sku] -= 1
+                continue
+            best_bin = n_bins
+            best_rot = best_rot_n
+            best_x, best_y, best_z = best_x_n, best_y_n, best_z_n
+            n_bins += 1
+
+        # --- Phase 3: Block extension at chosen DFTRC position ---
+        dx = dims_all[box_idx, best_rot, 0]
+        dy = dims_all[box_idx, best_rot, 1]
+        dz = dims_all[box_idx, best_rot, 2]
+        k, l, m = find_best_block_at_pos_njit(
+            bin_emss[best_bin], bin_ems_count[best_bin],
+            best_x, best_y, best_z, dx, dy, dz, max_count,
+        )
+        block_count = k * l * m
+
+        # --- Phase 4: assign positions to next 'block_count' unplaced same-SKU boxes ---
+        placed_so_far = 0
+        kk = 0
+        ll = 0
+        mm = 0
+        # First box is the current i itself
+        for j in range(i, n):
+            if placed_so_far >= block_count:
+                break
+            if placed[j] == 1:
+                continue
+            if sku_id_per_box[bps_order[j]] != my_sku:
+                continue
+            # Compute position
+            px = best_x + kk * dx
+            py = best_y + ll * dy
+            pz = best_z + mm * dz
+            placements_out[j, 0] = best_bin
+            placements_out[j, 1] = best_rot
+            placements_out[j, 2] = px
+            placements_out[j, 3] = py
+            placements_out[j, 4] = pz
+            placements_out[j, 5] = 1
+            placed[j] = 1
+            placed_so_far += 1
+            # Advance position within block (X fastest, then Y, then Z)
+            kk += 1
+            if kk >= k:
+                kk = 0
+                ll += 1
+                if ll >= l:
+                    ll = 0
+                    mm += 1
+        sku_remaining[my_sku] -= placed_so_far
+
+        # --- Phase 5: single EMS commit for the entire block region ---
+        new_count = commit_ems_njit(
+            bin_emss[best_bin], bin_ems_count[best_bin],
+            best_x, best_y, best_z,
+            best_x + k * dx, best_y + l * dy, best_z + m * dz,
+            scratch,
+        )
+        for j in range(new_count):
+            bin_emss[best_bin, j, 0, 0] = scratch[j, 0, 0]
+            bin_emss[best_bin, j, 0, 1] = scratch[j, 0, 1]
+            bin_emss[best_bin, j, 0, 2] = scratch[j, 0, 2]
+            bin_emss[best_bin, j, 1, 0] = scratch[j, 1, 0]
+            bin_emss[best_bin, j, 1, 1] = scratch[j, 1, 1]
+            bin_emss[best_bin, j, 1, 2] = scratch[j, 1, 2]
+        bin_ems_count[best_bin] = new_count
+
+    return n_bins
+
+
+@njit(cache=True, fastmath=True)
 def decode_njit_mode(
     bps_order: np.ndarray,
     n_rots_per_box: np.ndarray,
@@ -570,9 +840,11 @@ def warmup_jit() -> None:
     dims[:, 0, 1] = 10
     dims[:, 0, 2] = 10
     placements = np.zeros((n, 6), dtype=np.int64)
+    sku_ids = np.zeros(n, dtype=np.int64)  # both boxes same SKU
     for mode in (0, 1, 2):
         _ = decode_njit_mode(bps, n_rots, dims, 100, 100, 100, 1, placements, mode)
     _ = decode_layer_njit(bps, n_rots, dims, 100, 100, 100, 1, placements)
+    _ = decode_blocks_njit_mode(bps, n_rots, dims, sku_ids, 100, 100, 100, 1, placements, 1)
     _JIT_WARMED = True
 
 
@@ -585,8 +857,17 @@ def decode_chromosome(
     dims_all: np.ndarray,
     mode: int,
     max_pallets: int = 1,
+    sku_id_per_box: Optional[np.ndarray] = None,
 ) -> PackResult:
-    """Decode chromosome with chosen mode (0=DFTRC, 1=wall, 2=corner, 3=layer)."""
+    """Decode chromosome with chosen mode.
+
+    Modes:
+      0 = DFTRC
+      1 = wall-build
+      2 = corner-fill
+      3 = layer-build
+      4 = DFTRC + composite blocks (needs sku_id_per_box)
+    """
     n = len(boxes)
     if n == 0:
         return PackResult(pallets=[], unpacked=[])
@@ -603,6 +884,19 @@ def decode_chromosome(
             order, n_rots_arr, dims_all, L, W, H,
             max_pallets, placements_out,
         )
+    elif mode == 4:
+        if sku_id_per_box is None:
+            # Fall back to mode 0 if SKU info missing
+            n_bins = decode_njit_mode(
+                order, n_rots_arr, dims_all, L, W, H,
+                max_pallets, placements_out, 0,
+            )
+        else:
+            n_skus = int(sku_id_per_box.max()) + 1
+            n_bins = decode_blocks_njit_mode(
+                order, n_rots_arr, dims_all, sku_id_per_box,
+                L, W, H, max_pallets, placements_out, n_skus,
+            )
     else:
         n_bins = decode_njit_mode(
             order, n_rots_arr, dims_all, L, W, H,
@@ -639,10 +933,11 @@ def decode_auto_mode(
     n_rots_arr: np.ndarray,
     dims_all: np.ndarray,
     max_pallets: int = 1,
-    n_modes: int = 4,
+    n_modes: int = 5,
+    sku_id_per_box: Optional[np.ndarray] = None,
 ) -> PackResult:
     """Use last key in chromosome to pick decoder mode (0=DFTRC, 1=wall,
-    2=corner, 3=layer-build).
+    2=corner, 3=layer-build, 4=DFTRC+blocks).
     """
     n = len(boxes)
     if len(chrom) >= 2 * n + 1:
@@ -651,7 +946,8 @@ def decode_auto_mode(
     else:
         mode = 0
     return decode_chromosome(chrom, boxes, pallet, config,
-                             n_rots_arr, dims_all, mode, max_pallets)
+                             n_rots_arr, dims_all, mode, max_pallets,
+                             sku_id_per_box=sku_id_per_box)
 
 
 # ============================================================================
@@ -661,7 +957,7 @@ def decode_auto_mode(
 def chromosome_from_order(order: List[int], n: int, n_rots_arr: np.ndarray,
                           rotation_choices: Optional[List[int]] = None,
                           decoder_mode: Optional[int] = None,
-                          n_modes: int = 4,
+                          n_modes: int = 5,
                           rng: Optional[np.random.Generator] = None) -> np.ndarray:
     """Build a chromosome whose argsort yields `order`.
 
@@ -693,7 +989,7 @@ def chromosome_from_order(order: List[int], n: int, n_rots_arr: np.ndarray,
 def make_informed_chromosomes(
     boxes: List[Box], n_rots_arr: np.ndarray,
     decoder_mode: Optional[int] = None,
-    n_modes: int = 4,
+    n_modes: int = 5,
     seed: int = 42,
 ) -> List[np.ndarray]:
     """Generate informed initial chromosomes covering different orderings."""
@@ -740,7 +1036,7 @@ def chromosome_from_v2_result(
     boxes: List[Box],
     n_rots_arr: np.ndarray,
     decoder_mode: Optional[int] = None,
-    n_modes: int = 4,
+    n_modes: int = 5,
     rng: Optional[np.random.Generator] = None,
 ) -> Optional[np.ndarray]:
     """Convert a v2 layer-build result into a chromosome.
@@ -806,6 +1102,8 @@ def local_search_2opt(
     *,
     time_budget_s: float = 3.0,
     multi_decoder: bool = False,
+    n_modes: int = 5,
+    sku_id_per_box: Optional[np.ndarray] = None,
     max_pallets: int = 1,
     seed: int = 99,
     verbose: bool = False,
@@ -827,10 +1125,13 @@ def local_search_2opt(
     chrom_len = len(best_chrom)
     has_selector = multi_decoder and chrom_len > 2 * n
     current = best_chrom.copy()
-    decoder = decode_auto_mode if multi_decoder else (
-        lambda c, b, p, cfg, na, da, max_pallets=1:
-        decode_chromosome(c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
-    )
+    if multi_decoder:
+        decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_auto_mode(
+            c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes,
+            sku_id_per_box=sku_id_per_box)
+    else:
+        decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
+            c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
     res = decoder(current, boxes, pallet, config, n_rots_arr, dims_all,
                   max_pallets=max_pallets)
     best_fit = _fitness_pallet1(res, pallet)
@@ -918,7 +1219,8 @@ def path_relinking(
     n_rots_arr: np.ndarray, dims_all: np.ndarray,
     *,
     multi_decoder: bool = True,
-    n_modes: int = 4,
+    n_modes: int = 5,
+    sku_id_per_box: Optional[np.ndarray] = None,
     max_pallets: int = 1,
     max_evals: int = 100,
     verbose: bool = False,
@@ -931,7 +1233,8 @@ def path_relinking(
     """
     if multi_decoder:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_auto_mode(
-            c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes)
+            c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes,
+            sku_id_per_box=sku_id_per_box)
     else:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
             c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
@@ -969,6 +1272,77 @@ def path_relinking(
 
 
 # ============================================================================
+# Large Neighborhood Search (LNS) polish
+# ============================================================================
+
+def lns_polish(
+    best_chrom: np.ndarray,
+    boxes: List[Box], pallet: Pallet, config: PackerConfig,
+    n_rots_arr: np.ndarray, dims_all: np.ndarray,
+    *,
+    multi_decoder: bool = True,
+    n_modes: int = 5,
+    sku_id_per_box: Optional[np.ndarray] = None,
+    max_pallets: int = 1,
+    time_budget_s: float = 3.0,
+    seed: int = 77,
+    verbose: bool = False,
+) -> Tuple[PackResult, np.ndarray, int]:
+    """Large Neighborhood Search: destroy K box BPS keys, repair via decoder.
+
+    Each iteration:
+      1. Pick K random boxes (5-20% of N)
+      2. Replace their BPS keys with new random values
+      3. Re-decode
+      4. Keep if better
+
+    This escapes local optima that small swaps (in local_search_2opt) can't
+    reach. Complementary to BRKGA's mutation operator (which is whole-
+    chromosome random) and to swap-based LS (which is small-step).
+    """
+    n = len(boxes)
+    chrom_size = len(best_chrom)
+    if multi_decoder:
+        decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_auto_mode(
+            c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes,
+            sku_id_per_box=sku_id_per_box)
+    else:
+        decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
+            c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
+
+    current = best_chrom.copy()
+    res = decoder(current, boxes, pallet, config, n_rots_arr, dims_all,
+                  max_pallets=max_pallets)
+    best_fit = _fitness_pallet1(res, pallet)
+    best_res = res
+    rng = np.random.default_rng(seed)
+    t0 = time.time()
+    iters = 0
+    accepts = 0
+    while time.time() - t0 < time_budget_s:
+        cand = current.copy()
+        # Adaptive destroy size: try mixed sizes to escape different optima
+        k_destroy = int(rng.integers(max(3, n // 20), max(4, n // 4)))
+        idxs = rng.choice(n, size=k_destroy, replace=False)
+        for idx in idxs:
+            cand[idx] = rng.random()
+        cand_res = decoder(cand, boxes, pallet, config, n_rots_arr, dims_all,
+                           max_pallets=max_pallets)
+        cand_fit = _fitness_pallet1(cand_res, pallet)
+        iters += 1
+        if cand_fit < best_fit - 1e-9:
+            best_fit = cand_fit
+            best_res = cand_res
+            current = cand
+            accepts += 1
+            if verbose:
+                print(f"  [LNS] iter {iters} accept: util={(1-best_fit)*100:.2f}%")
+    if verbose:
+        print(f"  [LNS] {accepts}/{iters} accepted, final={(1-best_fit)*100:.2f}%")
+    return best_res, current, accepts
+
+
+# ============================================================================
 # v3.5 main driver
 # ============================================================================
 
@@ -992,11 +1366,13 @@ def brkga_pack_v35(
     patience: int = 100,
     # v3.5 features
     use_multi_decoder: bool = True,
-    n_modes: int = 4,  # 4 = DFTRC + wall + corner + layer-build
+    n_modes: int = 5,  # 5 = DFTRC + wall + corner + layer + DFTRC+blocks
     use_v2_seed: bool = True,
     use_smart_init: bool = True,
     use_local_search: bool = True,
     local_search_budget_s: float = 4.0,
+    use_lns: bool = False,
+    lns_budget_s: float = 3.0,
     use_v2_hybrid_polish: bool = True,
     # Multi-restart: run K times with different seeds, take best.
     # Reduces variance at the cost of less compute per run.
@@ -1028,6 +1404,8 @@ def brkga_pack_v35(
                 use_smart_init=use_smart_init,
                 use_local_search=use_local_search,
                 local_search_budget_s=local_search_budget_s,
+                use_lns=use_lns,
+                lns_budget_s=lns_budget_s,
                 use_v2_hybrid_polish=use_v2_hybrid_polish and r_idx == 0,
                 n_restarts=1,
                 verbose=verbose,
@@ -1048,11 +1426,12 @@ def brkga_pack_v35(
         return PackResult(pallets=[], unpacked=[])
 
     warmup_jit()
-    n_rots_arr, dims_all = precompute_box_dims(boxes)
+    n_rots_arr, dims_all, sku_id_per_box = precompute_box_dims_and_sku(boxes)
     chrom_size = 2 * n + (1 if use_multi_decoder else 0)
     if use_multi_decoder:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_auto_mode(
-            c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes)
+            c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes,
+            sku_id_per_box=sku_id_per_box)
     else:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
             c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
@@ -1135,7 +1514,8 @@ def brkga_pack_v35(
     # Phase 2: BRKGA
     # ----------------------------------------------------------------------
     # Reserve budget for LS + PR (if enabled)
-    polish_budget = (local_search_budget_s if use_local_search else 0)
+    polish_budget = ((local_search_budget_s if use_local_search else 0)
+                     + (lns_budget_s if use_lns else 0))
     brkga_budget = time_limit_s - v2_time - polish_budget
     brkga_budget = max(1.0, brkga_budget)
 
@@ -1223,6 +1603,7 @@ def brkga_pack_v35(
             best_chrom, second_best_chrom,
             boxes, pallet, config, n_rots_arr, dims_all,
             multi_decoder=use_multi_decoder, n_modes=n_modes,
+            sku_id_per_box=sku_id_per_box,
             max_pallets=max_pallets, max_evals=50, verbose=verbose,
         )
         if pr_fit < best_fitness - 1e-9:
@@ -1239,7 +1620,8 @@ def brkga_pack_v35(
         ls_res, ls_chrom, accepts = local_search_2opt(
             best_chrom, boxes, pallet, config, n_rots_arr, dims_all,
             time_budget_s=local_search_budget_s,
-            multi_decoder=use_multi_decoder,
+            multi_decoder=use_multi_decoder, n_modes=n_modes,
+            sku_id_per_box=sku_id_per_box,
             max_pallets=max_pallets,
             seed=seed + 999, verbose=verbose,
         )
@@ -1250,6 +1632,26 @@ def brkga_pack_v35(
             best_chrom = ls_chrom
             if verbose:
                 print(f"  [v3.5] local search improved: util={(1-best_fitness)*100:.2f}% ({accepts} accepts)")
+
+    # ----------------------------------------------------------------------
+    # Phase 3c: Large Neighborhood Search (LNS) polish
+    # ----------------------------------------------------------------------
+    if use_lns and best_chrom is not None:
+        lns_res, lns_chrom, lns_accepts = lns_polish(
+            best_chrom, boxes, pallet, config, n_rots_arr, dims_all,
+            multi_decoder=use_multi_decoder, n_modes=n_modes,
+            sku_id_per_box=sku_id_per_box,
+            max_pallets=max_pallets,
+            time_budget_s=lns_budget_s,
+            seed=seed + 1234, verbose=verbose,
+        )
+        lns_fit = _fitness_pallet1(lns_res, pallet)
+        if lns_fit < best_fitness - 1e-9:
+            best_fitness = lns_fit
+            best_result = lns_res
+            best_chrom = lns_chrom
+            if verbose:
+                print(f"  [v3.5] LNS improved: util={(1-best_fitness)*100:.2f}% ({lns_accepts} accepts)")
 
     # ----------------------------------------------------------------------
     # Phase 4: Compare with v2 hybrid (if enabled)

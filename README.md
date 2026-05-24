@@ -14,25 +14,29 @@ CP-SAT, and the next decision is strategic (see `NEXT_STEPS.md`).
 
 ## Status at a glance
 
-| Benchmark                             | v2 (production) | **v3.5** (research)                 |
-|---------------------------------------|-----------------|-------------------------------------|
-| Internal 41-case suite                | 32 / 36 LB (89%) | — (geometric-only)                  |
-| BR1 (Bischoff–Ratcliff 3 SKUs)        | 84.2%           | **89.08%** (beats Bortfeldt 87.8)   |
-| BR3 (8 SKUs)                          | 82.2%           | **87.89%** (beats Bortfeldt 85.6)   |
-| BR5 (12 SKUs)                         | 81.0%           | **87.90%** (beats Bortfeldt 83.0)   |
-| BR7 (20 SKUs, hardest)                | 79.8%           | **86.70%** (BEATS BRKGA-2013 SOTA 85.4) |
-| Validator errors across all configs   | 0               | 0                                   |
-| Regressions vs v1 baseline            | 0               | 0                                   |
+| Benchmark                             | v2 (production) | v3.5 | **v3.6** (research, n=5) |
+|---------------------------------------|-----------------|------|--------------------------|
+| Internal 41-case suite                | 32 / 36 LB (89%) | —   | —                        |
+| BR1 (3 SKUs)                          | 84.2%           | 88.7% | 88.85%                   |
+| BR3 (8 SKUs)                          | 82.2%           | 87.9% | **92.17%** (BEATS SOTA 90.5) |
+| BR5 (12 SKUs)                         | 81.0%           | 87.9% | **92.54%** (BEATS SOTA 88.7) |
+| BR7 (20 SKUs, hardest)                | 79.8%           | 86.7% | **92.77%** (BEATS SOTA 85.4 by +7.4pp) |
+| Validator errors across all configs   | 0               | 0   | 0                        |
 
-**v3.5 (`pallet_packer/brkga_v3_5.py`)** is the current best algorithm:
-hybrid BRKGA with multi-decoder (DFTRC + wall + corner + layer-build),
-v2 warm-start seed, position-based local search, and path relinking.
-JIT-compiled core for 1.6ms/decode. See
+**v3.6 (`pallet_packer/brkga_v3_5.py` with `n_modes=5, use_lns=True`)** is
+the current best algorithm: v3.5 + composite blocks (Bischoff-Ratcliff
+1995, decoder mode 4) + Large Neighborhood Search polish. **Beats
+BRKGA-2013 SOTA on BR3/5/7.** Only BR1 still has gap to SOTA (3.75pp).
+See [docs/reports/16_v36_blocks.md](docs/reports/16_v36_blocks.md).
+
+**v3.5** (without blocks): hybrid BRKGA with multi-decoder (DFTRC + wall
++ corner + layer-build), v2 warm-start seed, position-based local search,
+and path relinking. JIT-compiled core for 1.6ms/decode. See
 [docs/reports/15_v35_breakthrough.md](docs/reports/15_v35_breakthrough.md).
 
 **v2 (`pallet_packer/packer.py`)** remains as the trusted production
 reference with the full constraint stack (support, weight, fragility,
-CoG envelope). Use v2 for deployment; use v3.5 for BR-style academic
+CoG envelope). Use v2 for deployment; use v3.6 for BR-style academic
 benchmarking or pure-geometric optimization.
 
 Of the 4 remaining "open" internal cases, 2 are strongly suspected at-true-LB
