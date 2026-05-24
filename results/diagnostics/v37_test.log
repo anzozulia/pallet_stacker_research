@@ -1,0 +1,41 @@
+config                    set   inst   util%   time
+-------------------------------------------------------
+v3.6 (no SKU-aware)       BR1      1  90.21  30.0s
+v3.6 (no SKU-aware)       BR1      2  91.36  30.5s
+v3.6 (no SKU-aware)       BR1      3  84.83  30.0s
+  → v3.6 (no SKU-aware)/BR1 mean=88.80%
+v3.7 (with SKU-aware)     BR1      1  89.93  30.3s
+v3.7 (with SKU-aware)     BR1      2  91.35  30.4s
+v3.7 (with SKU-aware)     BR1      3  84.83  30.2s
+  → v3.7 (with SKU-aware)/BR1 mean=88.70%
+v3.6 (no SKU-aware)       BR3      1  91.08  30.1s
+v3.6 (no SKU-aware)       BR3      2  92.94  30.1s
+v3.6 (no SKU-aware)       BR3      3  92.79  30.3s
+  → v3.6 (no SKU-aware)/BR3 mean=92.27%
+v3.7 (with SKU-aware)     BR3      1  91.08  30.1s
+v3.7 (with SKU-aware)     BR3      2  93.16  30.0s
+v3.7 (with SKU-aware)     BR3      3  92.79  30.2s
+  → v3.7 (with SKU-aware)/BR3 mean=92.34%
+v3.6 (no SKU-aware)       BR5      1  90.85  30.3s
+v3.6 (no SKU-aware)       BR5      2  92.84  30.3s
+v3.6 (no SKU-aware)       BR5      3  91.61  30.2s
+  → v3.6 (no SKU-aware)/BR5 mean=91.77%
+v3.7 (with SKU-aware)     BR5      1  91.41  30.2s
+v3.7 (with SKU-aware)     BR5      2  93.86  30.7s
+v3.7 (with SKU-aware)     BR5      3  92.14  30.1s
+  → v3.7 (with SKU-aware)/BR5 mean=92.47%
+v3.6 (no SKU-aware)       BR7      1  91.82  30.3s
+v3.6 (no SKU-aware)       BR7      2  93.09  30.8s
+v3.6 (no SKU-aware)       BR7      3  92.07  30.4s
+  → v3.6 (no SKU-aware)/BR7 mean=92.33%
+v3.7 (with SKU-aware)     BR7      1  91.55  30.5s
+v3.7 (with SKU-aware)     BR7      2  92.21  30.4s
+v3.7 (with SKU-aware)     BR7      3  91.46  30.0s
+  → v3.7 (with SKU-aware)/BR7 mean=91.74%
+
+=== Summary ===
+set      v3.6    v3.7      Δ
+BR1    88.80%  88.70% -0.10pp
+BR3    92.27%  92.34% +0.07pp
+BR5    91.77%  92.47% +0.70pp
+BR7    92.33%  91.74% -0.59pp
