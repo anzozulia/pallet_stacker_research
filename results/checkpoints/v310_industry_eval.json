@@ -4,10 +4,10 @@
   "n_boxes": 120,
   "config": "v3.10",
   "pallets_used": 4,
-  "unpacked": 20,
-  "util_pallet1": 0.85625,
-  "util_total": 0.23635416666666667,
-  "runtime_s": 23.4578800201416,
+  "unpacked": 24,
+  "util_pallet1": 0.8858333333333334,
+  "util_total": 0.22333333333333333,
+  "runtime_s": 11.703386783599854,
   "validator_errors": 0
  },
  {
@@ -18,7 +18,7 @@
   "unpacked": 0,
   "util_pallet1": 0.0636,
   "util_total": 0.06,
-  "runtime_s": 29.23716402053833,
+  "runtime_s": 30.090601205825806,
   "validator_errors": 0
  },
  {
@@ -29,7 +29,7 @@
   "unpacked": 3,
   "util_pallet1": 0.5570833333333334,
   "util_total": 0.29168333333333335,
-  "runtime_s": 4.415877103805542,
+  "runtime_s": 4.428318977355957,
   "validator_errors": 0
  },
  {
@@ -40,7 +40,7 @@
   "unpacked": 0,
   "util_pallet1": 0.6916666666666667,
   "util_total": 0.6916666666666667,
-  "runtime_s": 6.122105121612549,
+  "runtime_s": 4.886934757232666,
   "validator_errors": 0
  },
  {
@@ -49,9 +49,9 @@
   "config": "v3.10",
   "pallets_used": 2,
   "unpacked": 0,
-  "util_pallet1": 0.8411111111111111,
+  "util_pallet1": 0.9294444444444444,
   "util_total": 0.5327777777777778,
-  "runtime_s": 30.068725109100342,
+  "runtime_s": 13.89420199394226,
   "validator_errors": 0
  },
  {
@@ -62,7 +62,7 @@
   "unpacked": 0,
   "util_pallet1": 0.3918055555555556,
   "util_total": 0.3918055555555556,
-  "runtime_s": 7.91090202331543,
+  "runtime_s": 5.098611116409302,
   "validator_errors": 0
  },
  {
@@ -73,7 +73,7 @@
   "unpacked": 19,
   "util_pallet1": 0.4805,
   "util_total": 0.19516666666666665,
-  "runtime_s": 30.075422048568726,
+  "runtime_s": 30.079524040222168,
   "validator_errors": 0
  },
  {
@@ -81,10 +81,10 @@
   "n_boxes": 60,
   "config": "v3.10",
   "pallets_used": 4,
-  "unpacked": 0,
-  "util_pallet1": 0.53575715,
-  "util_total": 0.19667648055555556,
-  "runtime_s": 30.02100682258606,
+  "unpacked": 6,
+  "util_pallet1": 0.53314707,
+  "util_total": 0.18106915444444444,
+  "runtime_s": 30.04162907600403,
   "validator_errors": 0
  },
  {
@@ -95,7 +95,7 @@
   "unpacked": 0,
   "util_pallet1": 0.855,
   "util_total": 0.7916666666666666,
-  "runtime_s": 9.524515867233276,
+  "runtime_s": 9.233014106750488,
   "validator_errors": 0
  },
  {
@@ -106,7 +106,7 @@
   "unpacked": 0,
   "util_pallet1": 0.9541666666666667,
   "util_total": 0.5208333333333334,
-  "runtime_s": 9.797165155410767,
+  "runtime_s": 8.70673418045044,
   "validator_errors": 0
  }
 ]
