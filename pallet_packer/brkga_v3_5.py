@@ -621,6 +621,244 @@ def decode_blocks_njit_mode(
 
 
 @njit(cache=True, fastmath=True)
+def decode_precomputed_blocks_njit_mode(
+    bps_order: np.ndarray,
+    n_rots_per_box: np.ndarray,
+    dims_all: np.ndarray,
+    sku_id_per_box: np.ndarray,
+    sku_best_block: np.ndarray,  # (n_skus, 4) - (k, l, m, rot)
+    L: int, W: int, H: int,
+    max_pallets: int,
+    placements_out: np.ndarray,
+    n_skus: int,
+) -> int:
+    """Mode 5: pre-computed block decoder (Bischoff 2002 style).
+
+    For each box in BPS order:
+      1. Get pre-computed best (k, l, m, rot) for box's SKU
+      2. If enough same-SKU boxes unplaced, try placing the full pre-computed
+         block at DFTRC position for BLOCK dimensions
+      3. If fits: place block, mark constituent boxes
+      4. If block doesn't fit anywhere or not enough boxes: fall back to
+         single-box DFTRC + dynamic block extension (like mode 4)
+
+    Key difference from mode 4: prefer a SPECIFIC pre-computed block size
+    rather than max-greedy. This sometimes packs better because the
+    pre-computed block was chosen for the WHOLE pallet capacity rather
+    than the current EMS shape.
+    """
+    n = bps_order.shape[0]
+    MAX_BINS = max_pallets if max_pallets > 0 else 32
+    bin_emss = np.zeros((MAX_BINS, MAX_EMS, 2, 3), dtype=np.int64)
+    bin_ems_count = np.zeros(MAX_BINS, dtype=np.int64)
+    n_bins = 0
+    scratch = np.zeros((MAX_EMS, 2, 3), dtype=np.int64)
+    placed = np.zeros(n, dtype=np.int64)
+    sku_remaining = np.zeros(n_skus, dtype=np.int64)
+    for i in range(n):
+        sku_remaining[sku_id_per_box[bps_order[i]]] += 1
+
+    for i in range(n):
+        if placed[i] == 1:
+            continue
+        box_idx = bps_order[i]
+        my_sku = sku_id_per_box[box_idx]
+        max_count = sku_remaining[my_sku]
+        n_rots = n_rots_per_box[box_idx]
+
+        # --- Try pre-computed block placement ---
+        k_pre = sku_best_block[my_sku, 0]
+        l_pre = sku_best_block[my_sku, 1]
+        m_pre = sku_best_block[my_sku, 2]
+        rot_pre = sku_best_block[my_sku, 3]
+        n_pre = k_pre * l_pre * m_pre
+
+        best_bin = -1
+        best_rot = -1
+        best_x = 0
+        best_y = 0
+        best_z = 0
+        best_k = 1
+        best_l = 1
+        best_m = 1
+
+        if n_pre > 1 and max_count >= n_pre:
+            # Try placing the full pre-computed block
+            dx_pre = dims_all[box_idx, rot_pre, 0]
+            dy_pre = dims_all[box_idx, rot_pre, 1]
+            dz_pre = dims_all[box_idx, rot_pre, 2]
+            block_dx = k_pre * dx_pre
+            block_dy = l_pre * dy_pre
+            block_dz = m_pre * dz_pre
+            best_score = -1
+            for b in range(n_bins):
+                idx, x, y, z = find_best_dftrc_njit(
+                    bin_emss[b], bin_ems_count[b],
+                    block_dx, block_dy, block_dz, L, W, H)
+                if idx < 0:
+                    continue
+                score = ((L - x - block_dx) * (L - x - block_dx)
+                         + (W - y - block_dy) * (W - y - block_dy)
+                         + (H - z - block_dz) * (H - z - block_dz))
+                if score > best_score:
+                    best_score = score
+                    best_bin = b
+                    best_rot = rot_pre
+                    best_x, best_y, best_z = x, y, z
+                    best_k, best_l, best_m = k_pre, l_pre, m_pre
+
+        # --- Fallback: mode 4 style (DFTRC single-box + dynamic block extend) ---
+        if best_bin < 0:
+            # Single-box DFTRC across rotations and existing bins
+            single_best_score = -1
+            single_best_rot = -1
+            single_best_x = 0
+            single_best_y = 0
+            single_best_z = 0
+            single_best_bin = -1
+            for b in range(n_bins):
+                for r in range(n_rots):
+                    dx = dims_all[box_idx, r, 0]
+                    dy = dims_all[box_idx, r, 1]
+                    dz = dims_all[box_idx, r, 2]
+                    idx, x, y, z = find_best_dftrc_njit(
+                        bin_emss[b], bin_ems_count[b], dx, dy, dz, L, W, H)
+                    if idx < 0:
+                        continue
+                    score = ((L - x - dx) * (L - x - dx)
+                             + (W - y - dy) * (W - y - dy)
+                             + (H - z - dz) * (H - z - dz))
+                    if score > single_best_score:
+                        single_best_score = score
+                        single_best_bin = b
+                        single_best_rot = r
+                        single_best_x, single_best_y, single_best_z = x, y, z
+                if single_best_bin >= 0:
+                    break
+            if single_best_bin >= 0:
+                # Dynamic block extension from single box
+                dx = dims_all[box_idx, single_best_rot, 0]
+                dy = dims_all[box_idx, single_best_rot, 1]
+                dz = dims_all[box_idx, single_best_rot, 2]
+                ek, el, em = find_best_block_at_pos_njit(
+                    bin_emss[single_best_bin], bin_ems_count[single_best_bin],
+                    single_best_x, single_best_y, single_best_z,
+                    dx, dy, dz, max_count)
+                best_bin = single_best_bin
+                best_rot = single_best_rot
+                best_x, best_y, best_z = single_best_x, single_best_y, single_best_z
+                best_k, best_l, best_m = ek, el, em
+
+        # --- If still no fit, open new bin ---
+        if best_bin < 0:
+            if n_bins >= MAX_BINS:
+                placements_out[i, 5] = 0
+                placed[i] = 1
+                sku_remaining[my_sku] -= 1
+                continue
+            bin_emss[n_bins, 0, 0, 0] = 0
+            bin_emss[n_bins, 0, 0, 1] = 0
+            bin_emss[n_bins, 0, 0, 2] = 0
+            bin_emss[n_bins, 0, 1, 0] = L
+            bin_emss[n_bins, 0, 1, 1] = W
+            bin_emss[n_bins, 0, 1, 2] = H
+            bin_ems_count[n_bins] = 1
+            # Try pre-computed block in new bin first
+            placed_in_new = False
+            if n_pre > 1 and max_count >= n_pre:
+                dx_pre = dims_all[box_idx, rot_pre, 0]
+                dy_pre = dims_all[box_idx, rot_pre, 1]
+                dz_pre = dims_all[box_idx, rot_pre, 2]
+                block_dx = k_pre * dx_pre
+                block_dy = l_pre * dy_pre
+                block_dz = m_pre * dz_pre
+                if block_dx <= L and block_dy <= W and block_dz <= H:
+                    best_bin = n_bins
+                    best_rot = rot_pre
+                    best_x, best_y, best_z = 0, 0, 0
+                    best_k, best_l, best_m = k_pre, l_pre, m_pre
+                    placed_in_new = True
+                    n_bins += 1
+            if not placed_in_new:
+                # Single-box new bin
+                single_best_rot = -1
+                for r in range(n_rots):
+                    dx = dims_all[box_idx, r, 0]
+                    dy = dims_all[box_idx, r, 1]
+                    dz = dims_all[box_idx, r, 2]
+                    if dx <= L and dy <= W and dz <= H:
+                        single_best_rot = r
+                        break
+                if single_best_rot < 0:
+                    placements_out[i, 5] = 0
+                    placed[i] = 1
+                    sku_remaining[my_sku] -= 1
+                    continue
+                dx = dims_all[box_idx, single_best_rot, 0]
+                dy = dims_all[box_idx, single_best_rot, 1]
+                dz = dims_all[box_idx, single_best_rot, 2]
+                ek, el, em = find_best_block_at_pos_njit(
+                    bin_emss[n_bins], 1, 0, 0, 0, dx, dy, dz, max_count)
+                best_bin = n_bins
+                best_rot = single_best_rot
+                best_x, best_y, best_z = 0, 0, 0
+                best_k, best_l, best_m = ek, el, em
+                n_bins += 1
+
+        # --- Place the block ---
+        dx = dims_all[box_idx, best_rot, 0]
+        dy = dims_all[box_idx, best_rot, 1]
+        dz = dims_all[box_idx, best_rot, 2]
+        k, l, m = best_k, best_l, best_m
+        block_count = k * l * m
+
+        placed_so_far = 0
+        kk = 0; ll = 0; mm = 0
+        for j in range(i, n):
+            if placed_so_far >= block_count:
+                break
+            if placed[j] == 1:
+                continue
+            if sku_id_per_box[bps_order[j]] != my_sku:
+                continue
+            px = best_x + kk * dx
+            py = best_y + ll * dy
+            pz = best_z + mm * dz
+            placements_out[j, 0] = best_bin
+            placements_out[j, 1] = best_rot
+            placements_out[j, 2] = px
+            placements_out[j, 3] = py
+            placements_out[j, 4] = pz
+            placements_out[j, 5] = 1
+            placed[j] = 1
+            placed_so_far += 1
+            kk += 1
+            if kk >= k:
+                kk = 0
+                ll += 1
+                if ll >= l:
+                    ll = 0
+                    mm += 1
+        sku_remaining[my_sku] -= placed_so_far
+
+        # Commit EMS
+        new_count = commit_ems_njit(
+            bin_emss[best_bin], bin_ems_count[best_bin],
+            best_x, best_y, best_z,
+            best_x + k * dx, best_y + l * dy, best_z + m * dz, scratch)
+        for j in range(new_count):
+            bin_emss[best_bin, j, 0, 0] = scratch[j, 0, 0]
+            bin_emss[best_bin, j, 0, 1] = scratch[j, 0, 1]
+            bin_emss[best_bin, j, 0, 2] = scratch[j, 0, 2]
+            bin_emss[best_bin, j, 1, 0] = scratch[j, 1, 0]
+            bin_emss[best_bin, j, 1, 1] = scratch[j, 1, 1]
+            bin_emss[best_bin, j, 1, 2] = scratch[j, 1, 2]
+        bin_ems_count[best_bin] = new_count
+
+    return n_bins
+
+
+@njit(cache=True, fastmath=True)
 def decode_njit_mode(
     bps_order: np.ndarray,
     n_rots_per_box: np.ndarray,
@@ -845,6 +1083,9 @@ def warmup_jit() -> None:
         _ = decode_njit_mode(bps, n_rots, dims, 100, 100, 100, 1, placements, mode)
     _ = decode_layer_njit(bps, n_rots, dims, 100, 100, 100, 1, placements)
     _ = decode_blocks_njit_mode(bps, n_rots, dims, sku_ids, 100, 100, 100, 1, placements, 1)
+    sku_best = np.array([[2, 1, 1, 0]], dtype=np.int64)
+    _ = decode_precomputed_blocks_njit_mode(
+        bps, n_rots, dims, sku_ids, sku_best, 100, 100, 100, 1, placements, 1)
     _JIT_WARMED = True
 
 
@@ -858,6 +1099,7 @@ def decode_chromosome(
     mode: int,
     max_pallets: int = 1,
     sku_id_per_box: Optional[np.ndarray] = None,
+    sku_best_block: Optional[np.ndarray] = None,
 ) -> PackResult:
     """Decode chromosome with chosen mode.
 
@@ -866,7 +1108,9 @@ def decode_chromosome(
       1 = wall-build
       2 = corner-fill
       3 = layer-build
-      4 = DFTRC + composite blocks (needs sku_id_per_box)
+      4 = DFTRC + dynamic composite blocks (needs sku_id_per_box)
+      5 = DFTRC + pre-computed best block per SKU (needs sku_id_per_box,
+          sku_best_block)
     """
     n = len(boxes)
     if n == 0:
@@ -886,7 +1130,6 @@ def decode_chromosome(
         )
     elif mode == 4:
         if sku_id_per_box is None:
-            # Fall back to mode 0 if SKU info missing
             n_bins = decode_njit_mode(
                 order, n_rots_arr, dims_all, L, W, H,
                 max_pallets, placements_out, 0,
@@ -895,6 +1138,26 @@ def decode_chromosome(
             n_skus = int(sku_id_per_box.max()) + 1
             n_bins = decode_blocks_njit_mode(
                 order, n_rots_arr, dims_all, sku_id_per_box,
+                L, W, H, max_pallets, placements_out, n_skus,
+            )
+    elif mode == 5:
+        if sku_id_per_box is None or sku_best_block is None:
+            # Fall back to mode 4 (dynamic blocks)
+            if sku_id_per_box is None:
+                n_bins = decode_njit_mode(
+                    order, n_rots_arr, dims_all, L, W, H,
+                    max_pallets, placements_out, 0,
+                )
+            else:
+                n_skus = int(sku_id_per_box.max()) + 1
+                n_bins = decode_blocks_njit_mode(
+                    order, n_rots_arr, dims_all, sku_id_per_box,
+                    L, W, H, max_pallets, placements_out, n_skus,
+                )
+        else:
+            n_skus = int(sku_id_per_box.max()) + 1
+            n_bins = decode_precomputed_blocks_njit_mode(
+                order, n_rots_arr, dims_all, sku_id_per_box, sku_best_block,
                 L, W, H, max_pallets, placements_out, n_skus,
             )
     else:
@@ -935,9 +1198,10 @@ def decode_auto_mode(
     max_pallets: int = 1,
     n_modes: int = 5,
     sku_id_per_box: Optional[np.ndarray] = None,
+    sku_best_block: Optional[np.ndarray] = None,
 ) -> PackResult:
-    """Use last key in chromosome to pick decoder mode (0=DFTRC, 1=wall,
-    2=corner, 3=layer-build, 4=DFTRC+blocks).
+    """Use last key in chromosome to pick decoder mode (0..n_modes-1).
+    Mode 5 (if n_modes >= 6) uses pre-computed blocks.
     """
     n = len(boxes)
     if len(chrom) >= 2 * n + 1:
@@ -947,7 +1211,8 @@ def decode_auto_mode(
         mode = 0
     return decode_chromosome(chrom, boxes, pallet, config,
                              n_rots_arr, dims_all, mode, max_pallets,
-                             sku_id_per_box=sku_id_per_box)
+                             sku_id_per_box=sku_id_per_box,
+                             sku_best_block=sku_best_block)
 
 
 # ============================================================================
@@ -1350,6 +1615,62 @@ def lns_polish(
 # of hundreds for the 225-key box-level chromosome.
 # ============================================================================
 
+def enumerate_best_block_per_sku(
+    boxes: List[Box],
+    sku_id_per_box: np.ndarray,
+    n_rots_arr: np.ndarray,
+    dims_all: np.ndarray,
+    L: int, W: int, H: int,
+) -> np.ndarray:
+    """For each SKU, find the BEST (k, l, m, rotation) block by max volume.
+
+    Returns (n_skus, 4) int64 array: best_blocks[sku] = [k, l, m, rot_idx].
+    For singleton SKUs (count=1), returns [1, 1, 1, 0] (no real block).
+    """
+    n_skus = int(sku_id_per_box.max()) + 1 if len(sku_id_per_box) > 0 else 0
+    best_blocks = np.ones((n_skus, 4), dtype=np.int64)  # default (1,1,1,0)
+    sku_groups = [[] for _ in range(n_skus)]
+    for i in range(len(boxes)):
+        sku_groups[int(sku_id_per_box[i])].append(i)
+    for sku in range(n_skus):
+        idxs = sku_groups[sku]
+        if len(idxs) < 2:
+            best_blocks[sku, 3] = 0
+            continue
+        sample = idxs[0]
+        count = len(idxs)
+        n_rots = int(n_rots_arr[sample])
+        best_n = 1
+        best_k, best_l, best_m, best_rot = 1, 1, 1, 0
+        for r in range(n_rots):
+            dx = int(dims_all[sample, r, 0])
+            dy = int(dims_all[sample, r, 1])
+            dz = int(dims_all[sample, r, 2])
+            if dx <= 0 or dy <= 0 or dz <= 0:
+                continue
+            max_k = min(L // dx, count)
+            max_l = min(W // dy, count)
+            max_m = min(H // dz, count)
+            for k in range(1, max_k + 1):
+                if k > count:
+                    break
+                for l in range(1, max_l + 1):
+                    if k * l > count:
+                        break
+                    for m in range(1, max_m + 1):
+                        n = k * l * m
+                        if n > count:
+                            break
+                        if n > best_n:
+                            best_n = n
+                            best_k, best_l, best_m, best_rot = k, l, m, r
+        best_blocks[sku, 0] = best_k
+        best_blocks[sku, 1] = best_l
+        best_blocks[sku, 2] = best_m
+        best_blocks[sku, 3] = best_rot
+    return best_blocks
+
+
 def compute_sku_groups(boxes: List[Box], sku_id_per_box: np.ndarray) -> List[List[int]]:
     """For each SKU id, return the list of box indices that belong to it.
 
@@ -1543,7 +1864,7 @@ def brkga_pack_v35(
     patience: int = 100,
     # v3.5 features
     use_multi_decoder: bool = True,
-    n_modes: int = 5,  # 5 = DFTRC + wall + corner + layer + DFTRC+blocks
+    n_modes: int = 6,  # 6 = DFTRC + wall + corner + layer + DFTRC+blocks + precomp-blocks
     use_v2_seed: bool = True,
     use_smart_init: bool = True,
     use_local_search: bool = True,
@@ -1613,11 +1934,16 @@ def brkga_pack_v35(
 
     warmup_jit()
     n_rots_arr, dims_all, sku_id_per_box = precompute_box_dims_and_sku(boxes)
+    L = int(round(pallet.length))
+    W = int(round(pallet.width))
+    H = int(round(pallet.height))
+    sku_best_block = enumerate_best_block_per_sku(
+        boxes, sku_id_per_box, n_rots_arr, dims_all, L, W, H)
     chrom_size = 2 * n + (1 if use_multi_decoder else 0)
     if use_multi_decoder:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_auto_mode(
             c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes,
-            sku_id_per_box=sku_id_per_box)
+            sku_id_per_box=sku_id_per_box, sku_best_block=sku_best_block)
     else:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
             c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
