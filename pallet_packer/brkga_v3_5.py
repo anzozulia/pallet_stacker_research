@@ -1198,6 +1198,21 @@ def decode_chromosome(
     return PackResult(pallets=pallets_state, unpacked=unpacked)
 
 
+def _selector_to_mode(selector: float, n_modes: int,
+                      mode_cdf: Optional[np.ndarray] = None) -> int:
+    """Map selector key in [0,1) to mode index.
+
+    Uniform when mode_cdf is None. With mode_cdf (cumulative weights of
+    length n_modes summing to 1.0), inverse-CDF lookup biases the mapping
+    toward modes with higher weight. This is the adaptive selector.
+    """
+    if mode_cdf is None:
+        return min(n_modes - 1, int(selector * n_modes))
+    # mode_cdf[m] = prob(mode <= m); find smallest m with selector < cdf[m]
+    m = int(np.searchsorted(mode_cdf, selector, side='right'))
+    return min(m, n_modes - 1)
+
+
 def decode_auto_mode(
     chrom: np.ndarray,
     boxes: List[Box],
@@ -1210,14 +1225,19 @@ def decode_auto_mode(
     sku_id_per_box: Optional[np.ndarray] = None,
     sku_best_block: Optional[np.ndarray] = None,
     sku_top_k_blocks: Optional[np.ndarray] = None,
+    mode_cdf: Optional[np.ndarray] = None,
 ) -> PackResult:
     """Use last key in chromosome to pick decoder mode (0..n_modes-1).
     Mode 5 (if n_modes >= 6) uses pre-computed top-K blocks per SKU.
+
+    If mode_cdf is provided, it remaps the uniform selector key via
+    inverse-CDF so modes with higher weight get more chromosome share —
+    the adaptive mode selector (v3.9).
     """
     n = len(boxes)
     if len(chrom) >= 2 * n + 1:
-        selector = chrom[-1]
-        mode = min(n_modes - 1, int(selector * n_modes))
+        selector = float(chrom[-1])
+        mode = _selector_to_mode(selector, n_modes, mode_cdf)
     else:
         mode = 0
     return decode_chromosome(chrom, boxes, pallet, config,
@@ -1225,6 +1245,88 @@ def decode_auto_mode(
                              sku_id_per_box=sku_id_per_box,
                              sku_best_block=sku_best_block,
                              sku_top_k_blocks=sku_top_k_blocks)
+
+
+# ============================================================================
+# Adaptive mode selector (v3.9): probe each mode on a small seed set,
+# bias the selector keyspace toward better-performing modes.
+# ============================================================================
+
+def probe_decoder_modes(
+    seed_chroms: List[np.ndarray],
+    boxes: List[Box],
+    pallet: Pallet,
+    config: PackerConfig,
+    n_rots_arr: np.ndarray,
+    dims_all: np.ndarray,
+    n_modes: int,
+    *,
+    max_pallets: int = 1,
+    sku_id_per_box: Optional[np.ndarray] = None,
+    sku_best_block: Optional[np.ndarray] = None,
+    sku_top_k_blocks: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Decode each seed chromosome under each mode; return mean util per mode.
+
+    Result shape: (n_modes,) with values in [0, 1] — higher is better.
+    Empty seeds → returns uniform array (no adaptation).
+    """
+    if not seed_chroms or n_modes <= 0:
+        return np.full(n_modes, 1.0 / max(n_modes, 1))
+    cap = pallet.length * pallet.width * pallet.height
+    fits = np.zeros(n_modes, dtype=np.float64)
+    counts = np.zeros(n_modes, dtype=np.int64)
+    for cs in seed_chroms:
+        for m in range(n_modes):
+            res = decode_chromosome(
+                cs, boxes, pallet, config, n_rots_arr, dims_all, m,
+                max_pallets=max_pallets,
+                sku_id_per_box=sku_id_per_box,
+                sku_best_block=sku_best_block,
+                sku_top_k_blocks=sku_top_k_blocks,
+            )
+            if res.pallets:
+                used = sum(p.box.volume for p in res.pallets[0].placements)
+                util = used / cap if cap > 0 else 0.0
+            else:
+                util = 0.0
+            fits[m] += util
+            counts[m] += 1
+    counts = np.maximum(counts, 1)
+    return fits / counts
+
+
+def mode_weights_from_fitness(
+    fits: np.ndarray,
+    *,
+    floor: float = 0.05,
+    sharpness: float = 30.0,
+) -> np.ndarray:
+    """Convert per-mode mean util → selector keyspace weights summing to 1.
+
+    Softmax over (fit - max_fit) * sharpness, then floors each mode at
+    `floor / n_modes` of the total to keep exploration alive. With the
+    defaults (sharpness=30, floor=0.05), a typical BR per-mode spread of
+    3 pp gives the best mode ~2.5× the keyspace of the worst, and every
+    mode keeps at least ~1 % share.
+    """
+    n = len(fits)
+    if n == 0:
+        return np.array([], dtype=np.float64)
+    # Softmax over deltas (best mode has delta=0, worse modes negative)
+    deltas = fits - fits.max()
+    w = np.exp(deltas * sharpness)
+    w = w / w.sum()
+    # Apply floor and renormalize.
+    floor_amt = floor / n
+    w = np.maximum(w, floor_amt)
+    w = w / w.sum()
+    return w
+
+
+def mode_weights_to_cdf(weights: np.ndarray) -> np.ndarray:
+    """Cumulative distribution from weights for inverse-CDF mode lookup."""
+    return np.cumsum(weights)
 
 
 # ============================================================================
@@ -1381,6 +1483,9 @@ def local_search_2opt(
     multi_decoder: bool = False,
     n_modes: int = 5,
     sku_id_per_box: Optional[np.ndarray] = None,
+    sku_best_block: Optional[np.ndarray] = None,
+    sku_top_k_blocks: Optional[np.ndarray] = None,
+    mode_cdf: Optional[np.ndarray] = None,
     max_pallets: int = 1,
     seed: int = 99,
     verbose: bool = False,
@@ -1405,7 +1510,10 @@ def local_search_2opt(
     if multi_decoder:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_auto_mode(
             c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes,
-            sku_id_per_box=sku_id_per_box)
+            sku_id_per_box=sku_id_per_box,
+            sku_best_block=sku_best_block,
+            sku_top_k_blocks=sku_top_k_blocks,
+            mode_cdf=mode_cdf)
     else:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
             c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
@@ -1498,6 +1606,9 @@ def path_relinking(
     multi_decoder: bool = True,
     n_modes: int = 5,
     sku_id_per_box: Optional[np.ndarray] = None,
+    sku_best_block: Optional[np.ndarray] = None,
+    sku_top_k_blocks: Optional[np.ndarray] = None,
+    mode_cdf: Optional[np.ndarray] = None,
     max_pallets: int = 1,
     max_evals: int = 100,
     verbose: bool = False,
@@ -1511,7 +1622,10 @@ def path_relinking(
     if multi_decoder:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_auto_mode(
             c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes,
-            sku_id_per_box=sku_id_per_box)
+            sku_id_per_box=sku_id_per_box,
+            sku_best_block=sku_best_block,
+            sku_top_k_blocks=sku_top_k_blocks,
+            mode_cdf=mode_cdf)
     else:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
             c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
@@ -1560,6 +1674,9 @@ def lns_polish(
     multi_decoder: bool = True,
     n_modes: int = 5,
     sku_id_per_box: Optional[np.ndarray] = None,
+    sku_best_block: Optional[np.ndarray] = None,
+    sku_top_k_blocks: Optional[np.ndarray] = None,
+    mode_cdf: Optional[np.ndarray] = None,
     max_pallets: int = 1,
     time_budget_s: float = 3.0,
     seed: int = 77,
@@ -1582,7 +1699,10 @@ def lns_polish(
     if multi_decoder:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_auto_mode(
             c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes,
-            sku_id_per_box=sku_id_per_box)
+            sku_id_per_box=sku_id_per_box,
+            sku_best_block=sku_best_block,
+            sku_top_k_blocks=sku_top_k_blocks,
+            mode_cdf=mode_cdf)
     else:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
             c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
@@ -1998,6 +2118,18 @@ def brkga_pack_v35(
     use_sku_aware: bool = False,
     sku_aware_budget_s: float = 5.0,
     use_v2_hybrid_polish: bool = True,
+    # Adaptive mode selector (v3.9, experimental): probe each decoder
+    # mode on a small seed set, then bias the selector keyspace toward
+    # better modes via inverse-CDF lookup. Empirically NEUTRAL on BR
+    # (n=5 mean Δ ≈ -0.08pp; W/T/L = 3/12/5 across BR1/3/5/7) — the
+    # probe only sees performance on smart-init chromosomes and fails
+    # to predict mode performance on random/crossover chromosomes that
+    # dominate BRKGA's exploration. BRKGA's elite-survival mechanism
+    # already biases toward good modes implicitly. Default OFF; kept
+    # for future experimentation with multi-seed probing or mid-run
+    # adaptation. See docs/reports/20_v39_adaptive_selector.md.
+    use_adaptive_mode_selector: bool = False,
+    adaptive_probe_seeds: int = 4,
     # Multi-restart: run K times with different seeds, take best.
     # Reduces variance at the cost of less compute per run.
     n_restarts: int = 1,
@@ -2033,6 +2165,8 @@ def brkga_pack_v35(
                 use_sku_aware=use_sku_aware,
                 sku_aware_budget_s=sku_aware_budget_s,
                 use_v2_hybrid_polish=use_v2_hybrid_polish and r_idx == 0,
+                use_adaptive_mode_selector=use_adaptive_mode_selector,
+                adaptive_probe_seeds=adaptive_probe_seeds,
                 n_restarts=1,
                 verbose=verbose,
             )
@@ -2061,14 +2195,20 @@ def brkga_pack_v35(
     sku_top_k_blocks = enumerate_top_k_blocks_per_sku(
         boxes, sku_id_per_box, n_rots_arr, dims_all, L, W, H, k_top=8)
     chrom_size = 2 * n + (1 if use_multi_decoder else 0)
+    # mode_cdf is filled in by the adaptive-selector probe (Phase 1c, below).
+    # While None, decode_auto_mode falls back to uniform mode allocation.
+    adaptive_state = {"mode_cdf": None, "mode_weights": None}
     if use_multi_decoder:
-        decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_auto_mode(
-            c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes,
-            sku_id_per_box=sku_id_per_box, sku_best_block=sku_best_block,
-            sku_top_k_blocks=sku_top_k_blocks)
+        def decoder(c, b, p, cfg, na, da, max_pallets=1):
+            return decode_auto_mode(
+                c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes,
+                sku_id_per_box=sku_id_per_box, sku_best_block=sku_best_block,
+                sku_top_k_blocks=sku_top_k_blocks,
+                mode_cdf=adaptive_state["mode_cdf"])
     else:
-        decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
-            c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
+        def decoder(c, b, p, cfg, na, da, max_pallets=1):
+            return decode_chromosome(
+                c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
 
     t_start = time.time()
 
@@ -2167,12 +2307,47 @@ def brkga_pack_v35(
                   f"({sku_aware_decodes} decodes)")
 
     # ----------------------------------------------------------------------
+    # Phase 1c: Adaptive mode selector probe (v3.9)
+    # ----------------------------------------------------------------------
+    adaptive_time = 0.0
+    if use_adaptive_mode_selector and use_multi_decoder and n_modes > 1:
+        t_ad = time.time()
+        # Pick up to adaptive_probe_seeds diverse chromosomes from pop[0]
+        # (which already contains v2 seed + smart-init chromosomes).
+        k_seeds = max(1, min(adaptive_probe_seeds, pops[0].shape[0]))
+        probe_chroms = [pops[0][i].copy() for i in range(k_seeds)]
+        mode_fits = probe_decoder_modes(
+            probe_chroms, boxes, pallet, config,
+            n_rots_arr, dims_all, n_modes,
+            max_pallets=max_pallets,
+            sku_id_per_box=sku_id_per_box,
+            sku_best_block=sku_best_block,
+            sku_top_k_blocks=sku_top_k_blocks,
+        )
+        # Only adapt if there is a meaningful spread; otherwise stay uniform.
+        if mode_fits.max() - mode_fits.min() > 0.005:  # > 0.5 pp spread
+            w = mode_weights_from_fitness(mode_fits)
+            adaptive_state["mode_weights"] = w
+            adaptive_state["mode_cdf"] = mode_weights_to_cdf(w)
+        adaptive_time = time.time() - t_ad
+        if verbose:
+            mfp = [f"m{m}={mode_fits[m]*100:.2f}%" for m in range(n_modes)]
+            wp = (None if adaptive_state["mode_weights"] is None
+                  else [f"m{m}={adaptive_state['mode_weights'][m]:.2f}"
+                        for m in range(n_modes)])
+            print(f"  [v3.5 adaptive] probe: {' '.join(mfp)} "
+                  f"in {adaptive_time:.2f}s")
+            if wp is not None:
+                print(f"  [v3.5 adaptive] weights: {' '.join(wp)}")
+
+    # ----------------------------------------------------------------------
     # Phase 2: BRKGA
     # ----------------------------------------------------------------------
     # Reserve budget for LS + PR (if enabled)
     polish_budget = ((local_search_budget_s if use_local_search else 0)
                      + (lns_budget_s if use_lns else 0))
-    brkga_budget = time_limit_s - v2_time - sku_aware_time - polish_budget
+    brkga_budget = (time_limit_s - v2_time - sku_aware_time
+                    - adaptive_time - polish_budget)
     brkga_budget = max(1.0, brkga_budget)
 
     best_fitness = float('inf')
@@ -2270,6 +2445,9 @@ def brkga_pack_v35(
             boxes, pallet, config, n_rots_arr, dims_all,
             multi_decoder=use_multi_decoder, n_modes=n_modes,
             sku_id_per_box=sku_id_per_box,
+            sku_best_block=sku_best_block,
+            sku_top_k_blocks=sku_top_k_blocks,
+            mode_cdf=adaptive_state["mode_cdf"],
             max_pallets=max_pallets, max_evals=50, verbose=verbose,
         )
         if pr_fit < best_fitness - 1e-9:
@@ -2288,6 +2466,9 @@ def brkga_pack_v35(
             time_budget_s=local_search_budget_s,
             multi_decoder=use_multi_decoder, n_modes=n_modes,
             sku_id_per_box=sku_id_per_box,
+            sku_best_block=sku_best_block,
+            sku_top_k_blocks=sku_top_k_blocks,
+            mode_cdf=adaptive_state["mode_cdf"],
             max_pallets=max_pallets,
             seed=seed + 999, verbose=verbose,
         )
@@ -2307,6 +2488,9 @@ def brkga_pack_v35(
             best_chrom, boxes, pallet, config, n_rots_arr, dims_all,
             multi_decoder=use_multi_decoder, n_modes=n_modes,
             sku_id_per_box=sku_id_per_box,
+            sku_best_block=sku_best_block,
+            sku_top_k_blocks=sku_top_k_blocks,
+            mode_cdf=adaptive_state["mode_cdf"],
             max_pallets=max_pallets,
             time_budget_s=lns_budget_s,
             seed=seed + 1234, verbose=verbose,

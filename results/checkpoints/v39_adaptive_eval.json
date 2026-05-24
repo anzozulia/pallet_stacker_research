@@ -1,0 +1,362 @@
+[
+ {
+  "set_id": "BR1",
+  "instance_id": 1,
+  "n_boxes": 112,
+  "config": "v3.8",
+  "util_pallet1": 0.9104658018280058,
+  "runtime_s": 30.07796812057495,
+  "validator_errors": 2
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 1,
+  "n_boxes": 112,
+  "config": "v3.9",
+  "util_pallet1": 0.9117606004994413,
+  "runtime_s": 30.06905698776245,
+  "validator_errors": 3
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 2,
+  "n_boxes": 138,
+  "config": "v3.8",
+  "util_pallet1": 0.9135865790262556,
+  "runtime_s": 30.127490043640137,
+  "validator_errors": 29
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 2,
+  "n_boxes": 138,
+  "config": "v3.9",
+  "util_pallet1": 0.9135865790262556,
+  "runtime_s": 30.127477169036865,
+  "validator_errors": 29
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 3,
+  "n_boxes": 127,
+  "config": "v3.8",
+  "util_pallet1": 0.8810599801526241,
+  "runtime_s": 30.05074906349182,
+  "validator_errors": 0
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 3,
+  "n_boxes": 127,
+  "config": "v3.9",
+  "util_pallet1": 0.8810599801526241,
+  "runtime_s": 26.474031925201416,
+  "validator_errors": 0
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 4,
+  "n_boxes": 197,
+  "config": "v3.8",
+  "util_pallet1": 0.8691016370429404,
+  "runtime_s": 30.185153007507324,
+  "validator_errors": 0
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 4,
+  "n_boxes": 197,
+  "config": "v3.9",
+  "util_pallet1": 0.8743169903774125,
+  "runtime_s": 30.470690727233887,
+  "validator_errors": 37
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 5,
+  "n_boxes": 136,
+  "config": "v3.8",
+  "util_pallet1": 0.9460838322318461,
+  "runtime_s": 30.110865831375122,
+  "validator_errors": 1
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 5,
+  "n_boxes": 136,
+  "config": "v3.9",
+  "util_pallet1": 0.9450702601096325,
+  "runtime_s": 30.19082283973694,
+  "validator_errors": 0
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 1,
+  "n_boxes": 94,
+  "config": "v3.8",
+  "util_pallet1": 0.9402371980769448,
+  "runtime_s": 30.021952867507935,
+  "validator_errors": 24
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 1,
+  "n_boxes": 94,
+  "config": "v3.9",
+  "util_pallet1": 0.9315016274715334,
+  "runtime_s": 30.07718276977539,
+  "validator_errors": 12
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 2,
+  "n_boxes": 115,
+  "config": "v3.8",
+  "util_pallet1": 0.952215847192487,
+  "runtime_s": 30.02676510810852,
+  "validator_errors": 8
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 2,
+  "n_boxes": 115,
+  "config": "v3.9",
+  "util_pallet1": 0.9456383297628883,
+  "runtime_s": 30.107532024383545,
+  "validator_errors": 28
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 3,
+  "n_boxes": 143,
+  "config": "v3.8",
+  "util_pallet1": 0.9269956882140752,
+  "runtime_s": 30.234984159469604,
+  "validator_errors": 25
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 3,
+  "n_boxes": 143,
+  "config": "v3.9",
+  "util_pallet1": 0.9269956882140752,
+  "runtime_s": 30.353219032287598,
+  "validator_errors": 25
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 4,
+  "n_boxes": 185,
+  "config": "v3.8",
+  "util_pallet1": 0.9322605270521861,
+  "runtime_s": 30.060396909713745,
+  "validator_errors": 39
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 4,
+  "n_boxes": 185,
+  "config": "v3.9",
+  "util_pallet1": 0.9293040922417763,
+  "runtime_s": 30.715931177139282,
+  "validator_errors": 50
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 5,
+  "n_boxes": 113,
+  "config": "v3.8",
+  "util_pallet1": 0.9467389751017128,
+  "runtime_s": 30.23525094985962,
+  "validator_errors": 7
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 5,
+  "n_boxes": 113,
+  "config": "v3.9",
+  "util_pallet1": 0.9464804474101035,
+  "runtime_s": 30.36639380455017,
+  "validator_errors": 13
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 1,
+  "n_boxes": 98,
+  "config": "v3.8",
+  "util_pallet1": 0.9144537551487856,
+  "runtime_s": 30.26220393180847,
+  "validator_errors": 23
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 1,
+  "n_boxes": 98,
+  "config": "v3.9",
+  "util_pallet1": 0.9168949956828967,
+  "runtime_s": 30.157487154006958,
+  "validator_errors": 14
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 2,
+  "n_boxes": 138,
+  "config": "v3.8",
+  "util_pallet1": 0.9335200643942995,
+  "runtime_s": 30.498547077178955,
+  "validator_errors": 53
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 2,
+  "n_boxes": 138,
+  "config": "v3.9",
+  "util_pallet1": 0.9292374912012847,
+  "runtime_s": 30.41393208503723,
+  "validator_errors": 11
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 3,
+  "n_boxes": 133,
+  "config": "v3.8",
+  "util_pallet1": 0.9213161216392896,
+  "runtime_s": 30.370149850845337,
+  "validator_errors": 25
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 3,
+  "n_boxes": 133,
+  "config": "v3.9",
+  "util_pallet1": 0.9210528747122761,
+  "runtime_s": 30.558928966522217,
+  "validator_errors": 49
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 4,
+  "n_boxes": 142,
+  "config": "v3.8",
+  "util_pallet1": 0.9332198944353568,
+  "runtime_s": 30.4976909160614,
+  "validator_errors": 27
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 4,
+  "n_boxes": 142,
+  "config": "v3.9",
+  "util_pallet1": 0.9359889888938444,
+  "runtime_s": 30.512822151184082,
+  "validator_errors": 12
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 5,
+  "n_boxes": 129,
+  "config": "v3.8",
+  "util_pallet1": 0.9313900939925462,
+  "runtime_s": 30.364399194717407,
+  "validator_errors": 16
+ },
+ {
+  "set_id": "BR5",
+  "instance_id": 5,
+  "n_boxes": 129,
+  "config": "v3.9",
+  "util_pallet1": 0.940164947247589,
+  "runtime_s": 30.082745790481567,
+  "validator_errors": 18
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 1,
+  "n_boxes": 110,
+  "config": "v3.8",
+  "util_pallet1": 0.9287256535642524,
+  "runtime_s": 30.32978892326355,
+  "validator_errors": 39
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 1,
+  "n_boxes": 110,
+  "config": "v3.9",
+  "util_pallet1": 0.9230918835133178,
+  "runtime_s": 30.11087727546692,
+  "validator_errors": 35
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 2,
+  "n_boxes": 129,
+  "config": "v3.8",
+  "util_pallet1": 0.9226183315043527,
+  "runtime_s": 30.715074062347412,
+  "validator_errors": 44
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 2,
+  "n_boxes": 129,
+  "config": "v3.9",
+  "util_pallet1": 0.9244013716357999,
+  "runtime_s": 30.473372220993042,
+  "validator_errors": 42
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 3,
+  "n_boxes": 126,
+  "config": "v3.8",
+  "util_pallet1": 0.9142038018426288,
+  "runtime_s": 30.482494354248047,
+  "validator_errors": 32
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 3,
+  "n_boxes": 126,
+  "config": "v3.9",
+  "util_pallet1": 0.911494794550413,
+  "runtime_s": 30.393658876419067,
+  "validator_errors": 27
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 4,
+  "n_boxes": 153,
+  "config": "v3.8",
+  "util_pallet1": 0.9292603894632102,
+  "runtime_s": 30.39244794845581,
+  "validator_errors": 58
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 4,
+  "n_boxes": 153,
+  "config": "v3.9",
+  "util_pallet1": 0.9414189677370468,
+  "runtime_s": 30.579468250274658,
+  "validator_errors": 70
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 5,
+  "n_boxes": 126,
+  "config": "v3.8",
+  "util_pallet1": 0.9334973987707389,
+  "runtime_s": 30.570647954940796,
+  "validator_errors": 43
+ },
+ {
+  "set_id": "BR7",
+  "instance_id": 5,
+  "n_boxes": 126,
+  "config": "v3.9",
+  "util_pallet1": 0.9155897282850365,
+  "runtime_s": 30.328582048416138,
+  "validator_errors": 38
+ }
+]
