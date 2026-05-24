@@ -21,6 +21,7 @@ sets where v3-fast had the largest gap to BRKGA-2013.
 """
 from __future__ import annotations
 
+import math
 import time
 from typing import List, Optional, Tuple
 
@@ -55,6 +56,45 @@ def precompute_box_dims_and_sku(boxes: List[Box]) -> tuple:
             sku_to_id[key] = len(sku_to_id)
         sku_id_per_box[i] = sku_to_id[key]
     return n_rots_arr, dims_all, sku_id_per_box
+
+
+# ============================================================================
+# Constraint-aware support (v3.10): per-box weight + max_load_on_top arrays,
+# plus a pallet weight cap. Empty / inf when constraints are inactive (BR).
+# ============================================================================
+
+# Sentinel: "no limit" stored as a large finite number so JIT comparisons work
+# without nan/inf-aware paths.
+_NO_LIMIT = 1e18
+
+
+def precompute_constraint_arrays(boxes: List[Box], pallet: Pallet) -> tuple:
+    """Return (weights, max_load_on_top, pallet_max_weight, has_constraints).
+
+    weights:           float64[n]   per-box weight (0 if none)
+    max_load_on_top:   float64[n]   per-box load capacity on top (_NO_LIMIT if
+                                    infinite or unset)
+    pallet_max_weight: float64      pallet weight cap (_NO_LIMIT if infinite)
+    has_constraints:   bool         True iff any constraint is finite — JIT
+                                    decoders short-circuit if False
+    """
+    n = len(boxes)
+    weights = np.zeros(n, dtype=np.float64)
+    mlot = np.full(n, _NO_LIMIT, dtype=np.float64)
+    has_constraints = False
+    for i, b in enumerate(boxes):
+        weights[i] = float(b.weight) if b.weight else 0.0
+        m = getattr(b, 'max_load_on_top', float('inf'))
+        if m is not None and not math.isinf(m):
+            mlot[i] = float(m)
+            has_constraints = True
+    pmw = getattr(pallet, 'max_weight', float('inf'))
+    if pmw is None or math.isinf(pmw):
+        pallet_max_weight = _NO_LIMIT
+    else:
+        pallet_max_weight = float(pmw)
+        has_constraints = True
+    return weights, mlot, pallet_max_weight, has_constraints
 
 
 # ============================================================================
@@ -1055,6 +1095,398 @@ def decode_njit_mode(
 
 
 # ============================================================================
+# Constraint-aware decoder (v3.10): DFTRC / wall / corner with
+# Pallet.max_weight and Box.max_load_on_top enforcement.
+# ============================================================================
+
+@njit(cache=True, fastmath=True)
+def _check_load_on_top_njit(
+    placements_out: np.ndarray,
+    dims_all: np.ndarray,
+    bps_order: np.ndarray,
+    mlot: np.ndarray,
+    placement_top_loads: np.ndarray,
+    n_placed: int,
+    cand_pallet: int,
+    cand_x: int, cand_y: int, cand_z: int,
+    cand_dx: int, cand_dy: int, cand_dz: int,
+    cand_weight: float,
+    support_ratio: float,
+) -> bool:
+    """Returns True if placing candidate would not violate any supporter's
+    max_load_on_top AND the placement's support fraction meets support_ratio.
+
+    Distributes candidate weight across supporters in proportion to contact
+    area (mirrors v2 packer.py:_load_bearing_ok). When support_ratio > 0
+    and cand_z > 0, additionally requires total_contact_area / footprint
+    >= support_ratio (mirrors v2's full/partial-support check).
+    """
+    # Floor placement → no supporters needed.
+    if cand_z <= 0:
+        return True
+    # Pass 1: total contact area across supporters on this pallet.
+    total_area = 0.0
+    for i in range(n_placed):
+        if placements_out[i, 5] == 0:
+            continue
+        if placements_out[i, 0] != cand_pallet:
+            continue
+        sup_box = bps_order[i]
+        sup_rot = placements_out[i, 1]
+        sup_dz = dims_all[sup_box, sup_rot, 2]
+        sup_z = placements_out[i, 4]
+        if sup_z + sup_dz != cand_z:
+            continue
+        sup_dx = dims_all[sup_box, sup_rot, 0]
+        sup_dy = dims_all[sup_box, sup_rot, 1]
+        sup_x = placements_out[i, 2]
+        sup_y = placements_out[i, 3]
+        x_lo = cand_x if cand_x > sup_x else sup_x
+        x_hi = cand_x + cand_dx if cand_x + cand_dx < sup_x + sup_dx else sup_x + sup_dx
+        if x_hi <= x_lo:
+            continue
+        y_lo = cand_y if cand_y > sup_y else sup_y
+        y_hi = cand_y + cand_dy if cand_y + cand_dy < sup_y + sup_dy else sup_y + sup_dy
+        if y_hi <= y_lo:
+            continue
+        total_area += float((x_hi - x_lo) * (y_hi - y_lo))
+    if total_area <= 0.0:
+        # No supporters but z > 0 — would be floating; reject defensively.
+        # (EMS-based decoder shouldn't produce this, but be safe.)
+        return False
+    # Support-ratio check: fraction of footprint resting on supporters.
+    if support_ratio > 0.0:
+        footprint = float(cand_dx * cand_dy)
+        if footprint > 0 and total_area / footprint < support_ratio - 1e-6:
+            return False
+    # Pass 2: each supporter's accumulated top-load must not exceed its mlot.
+    for i in range(n_placed):
+        if placements_out[i, 5] == 0:
+            continue
+        if placements_out[i, 0] != cand_pallet:
+            continue
+        sup_box = bps_order[i]
+        sup_rot = placements_out[i, 1]
+        sup_dz = dims_all[sup_box, sup_rot, 2]
+        sup_z = placements_out[i, 4]
+        if sup_z + sup_dz != cand_z:
+            continue
+        sup_dx = dims_all[sup_box, sup_rot, 0]
+        sup_dy = dims_all[sup_box, sup_rot, 1]
+        sup_x = placements_out[i, 2]
+        sup_y = placements_out[i, 3]
+        x_lo = cand_x if cand_x > sup_x else sup_x
+        x_hi = cand_x + cand_dx if cand_x + cand_dx < sup_x + sup_dx else sup_x + sup_dx
+        if x_hi <= x_lo:
+            continue
+        y_lo = cand_y if cand_y > sup_y else sup_y
+        y_hi = cand_y + cand_dy if cand_y + cand_dy < sup_y + sup_dy else sup_y + sup_dy
+        if y_hi <= y_lo:
+            continue
+        area = float((x_hi - x_lo) * (y_hi - y_lo))
+        share = cand_weight * (area / total_area)
+        if placement_top_loads[i] + share > mlot[sup_box] + 1e-6:
+            return False
+    return True
+
+
+@njit(cache=True, fastmath=True)
+def _apply_load_contribution_njit(
+    placements_out: np.ndarray,
+    dims_all: np.ndarray,
+    bps_order: np.ndarray,
+    placement_top_loads: np.ndarray,
+    n_placed: int,
+    cand_pallet: int,
+    cand_x: int, cand_y: int, cand_z: int,
+    cand_dx: int, cand_dy: int, cand_dz: int,
+    cand_weight: float,
+) -> None:
+    """Update placement_top_loads to add candidate's weight share to each
+    of its supporters. Must be called AFTER _check_load_on_top_njit passes.
+    """
+    if cand_z <= 0 or cand_weight <= 0:
+        return
+    total_area = 0.0
+    for i in range(n_placed):
+        if placements_out[i, 5] == 0:
+            continue
+        if placements_out[i, 0] != cand_pallet:
+            continue
+        sup_box = bps_order[i]
+        sup_rot = placements_out[i, 1]
+        sup_dz = dims_all[sup_box, sup_rot, 2]
+        sup_z = placements_out[i, 4]
+        if sup_z + sup_dz != cand_z:
+            continue
+        sup_dx = dims_all[sup_box, sup_rot, 0]
+        sup_dy = dims_all[sup_box, sup_rot, 1]
+        sup_x = placements_out[i, 2]
+        sup_y = placements_out[i, 3]
+        x_lo = cand_x if cand_x > sup_x else sup_x
+        x_hi = cand_x + cand_dx if cand_x + cand_dx < sup_x + sup_dx else sup_x + sup_dx
+        if x_hi <= x_lo:
+            continue
+        y_lo = cand_y if cand_y > sup_y else sup_y
+        y_hi = cand_y + cand_dy if cand_y + cand_dy < sup_y + sup_dy else sup_y + sup_dy
+        if y_hi <= y_lo:
+            continue
+        total_area += float((x_hi - x_lo) * (y_hi - y_lo))
+    if total_area <= 0.0:
+        return
+    for i in range(n_placed):
+        if placements_out[i, 5] == 0:
+            continue
+        if placements_out[i, 0] != cand_pallet:
+            continue
+        sup_box = bps_order[i]
+        sup_rot = placements_out[i, 1]
+        sup_dz = dims_all[sup_box, sup_rot, 2]
+        sup_z = placements_out[i, 4]
+        if sup_z + sup_dz != cand_z:
+            continue
+        sup_dx = dims_all[sup_box, sup_rot, 0]
+        sup_dy = dims_all[sup_box, sup_rot, 1]
+        sup_x = placements_out[i, 2]
+        sup_y = placements_out[i, 3]
+        x_lo = cand_x if cand_x > sup_x else sup_x
+        x_hi = cand_x + cand_dx if cand_x + cand_dx < sup_x + sup_dx else sup_x + sup_dx
+        if x_hi <= x_lo:
+            continue
+        y_lo = cand_y if cand_y > sup_y else sup_y
+        y_hi = cand_y + cand_dy if cand_y + cand_dy < sup_y + sup_dy else sup_y + sup_dy
+        if y_hi <= y_lo:
+            continue
+        area = float((x_hi - x_lo) * (y_hi - y_lo))
+        placement_top_loads[i] += cand_weight * (area / total_area)
+
+
+@njit(cache=True, fastmath=True)
+def decode_njit_mode_cstr(
+    bps_order: np.ndarray,
+    n_rots_per_box: np.ndarray,
+    dims_all: np.ndarray,
+    L: int, W: int, H: int,
+    max_pallets: int,
+    placements_out: np.ndarray,
+    mode: int,  # 0=DFTRC, 1=wall, 2=corner
+    weights: np.ndarray,
+    mlot: np.ndarray,
+    pallet_max_weight: float,
+    support_ratio: float,
+) -> int:
+    """Constraint-aware variant of decode_njit_mode.
+
+    Enforces Pallet.max_weight and Box.max_load_on_top. Per bin: candidate
+    rejected if it would bust the pallet weight cap, or if it would cause
+    any supporter's max_load_on_top to be exceeded. Rejected → try next bin.
+    Otherwise functionally identical to decode_njit_mode.
+    """
+    n = bps_order.shape[0]
+    MAX_BINS = max_pallets if max_pallets > 0 else 32
+    bin_emss = np.zeros((MAX_BINS, MAX_EMS, 2, 3), dtype=np.int64)
+    bin_ems_count = np.zeros(MAX_BINS, dtype=np.int64)
+    n_bins = 0
+    scratch = np.zeros((MAX_EMS, 2, 3), dtype=np.int64)
+    pallet_weights = np.zeros(MAX_BINS, dtype=np.float64)
+    placement_top_loads = np.zeros(n, dtype=np.float64)
+
+    for i in range(n):
+        box_idx = bps_order[i]
+        n_rots = n_rots_per_box[box_idx]
+        cand_weight = weights[box_idx]
+        placed = False
+
+        for b in range(n_bins):
+            # Pre-check: pallet weight cap.
+            if pallet_weights[b] + cand_weight > pallet_max_weight + 1e-6:
+                continue
+            # Find best (rot, x, y, z) for this bin.
+            bin_best_rot = -1
+            bin_best_score = -1
+            bin_best_min = 1 << 62
+            bin_best_x = 0
+            bin_best_y = 0
+            bin_best_z = 0
+            for r in range(n_rots):
+                dx = dims_all[box_idx, r, 0]
+                dy = dims_all[box_idx, r, 1]
+                dz = dims_all[box_idx, r, 2]
+                if mode == 0:
+                    idx, x, y, z = find_best_dftrc_njit(
+                        bin_emss[b], bin_ems_count[b], dx, dy, dz, L, W, H)
+                    if idx < 0:
+                        continue
+                    sc = ((L - x - dx) * (L - x - dx)
+                          + (W - y - dy) * (W - y - dy)
+                          + (H - z - dz) * (H - z - dz))
+                    if sc > bin_best_score:
+                        bin_best_score = sc
+                        bin_best_rot = r
+                        bin_best_x, bin_best_y, bin_best_z = x, y, z
+                elif mode == 1:
+                    idx, x, y, z = find_best_wall_njit(
+                        bin_emss[b], bin_ems_count[b], dx, dy, dz, L, W, H)
+                    if idx < 0:
+                        continue
+                    yz = ((W - y - dy) * (W - y - dy)
+                          + (H - z - dz) * (H - z - dz))
+                    BIG = (W + H) * (W + H) + 1
+                    cand = x * BIG - yz
+                    if cand < bin_best_min:
+                        bin_best_min = cand
+                        bin_best_rot = r
+                        bin_best_x, bin_best_y, bin_best_z = x, y, z
+                else:
+                    idx, x, y, z = find_best_corner_njit(
+                        bin_emss[b], bin_ems_count[b], dx, dy, dz, L, W, H)
+                    if idx < 0:
+                        continue
+                    cand = x + y + z
+                    if cand < bin_best_min:
+                        bin_best_min = cand
+                        bin_best_rot = r
+                        bin_best_x, bin_best_y, bin_best_z = x, y, z
+
+            if bin_best_rot < 0:
+                continue  # no geometric fit in this bin
+            dx = dims_all[box_idx, bin_best_rot, 0]
+            dy = dims_all[box_idx, bin_best_rot, 1]
+            dz = dims_all[box_idx, bin_best_rot, 2]
+            # Load-on-top + support-ratio check
+            if not _check_load_on_top_njit(
+                    placements_out, dims_all, bps_order, mlot,
+                    placement_top_loads, n,
+                    b, bin_best_x, bin_best_y, bin_best_z,
+                    dx, dy, dz, cand_weight, support_ratio):
+                continue  # try next bin
+            # Commit
+            new_count = commit_ems_njit(
+                bin_emss[b], bin_ems_count[b],
+                bin_best_x, bin_best_y, bin_best_z,
+                bin_best_x + dx, bin_best_y + dy, bin_best_z + dz,
+                scratch,
+            )
+            for j in range(new_count):
+                bin_emss[b, j, 0, 0] = scratch[j, 0, 0]
+                bin_emss[b, j, 0, 1] = scratch[j, 0, 1]
+                bin_emss[b, j, 0, 2] = scratch[j, 0, 2]
+                bin_emss[b, j, 1, 0] = scratch[j, 1, 0]
+                bin_emss[b, j, 1, 1] = scratch[j, 1, 1]
+                bin_emss[b, j, 1, 2] = scratch[j, 1, 2]
+            bin_ems_count[b] = new_count
+            placements_out[i, 0] = b
+            placements_out[i, 1] = bin_best_rot
+            placements_out[i, 2] = bin_best_x
+            placements_out[i, 3] = bin_best_y
+            placements_out[i, 4] = bin_best_z
+            placements_out[i, 5] = 1
+            pallet_weights[b] += cand_weight
+            _apply_load_contribution_njit(
+                placements_out, dims_all, bps_order,
+                placement_top_loads, n,
+                b, bin_best_x, bin_best_y, bin_best_z,
+                dx, dy, dz, cand_weight)
+            placed = True
+            break
+
+        if not placed:
+            if n_bins >= MAX_BINS:
+                placements_out[i, 5] = 0
+                continue
+            # Open new bin and try to place there.
+            if cand_weight > pallet_max_weight + 1e-6:
+                # Box alone exceeds pallet cap — cannot pack at all.
+                placements_out[i, 5] = 0
+                continue
+            bin_emss[n_bins, 0, 0, 0] = 0
+            bin_emss[n_bins, 0, 0, 1] = 0
+            bin_emss[n_bins, 0, 0, 2] = 0
+            bin_emss[n_bins, 0, 1, 0] = L
+            bin_emss[n_bins, 0, 1, 1] = W
+            bin_emss[n_bins, 0, 1, 2] = H
+            bin_ems_count[n_bins] = 1
+            best_rot_n = -1
+            best_score_n = -1
+            best_min_n = 1 << 62
+            best_x_n = 0
+            best_y_n = 0
+            best_z_n = 0
+            for r in range(n_rots):
+                dx = dims_all[box_idx, r, 0]
+                dy = dims_all[box_idx, r, 1]
+                dz = dims_all[box_idx, r, 2]
+                if mode == 0:
+                    idx, x, y, z = find_best_dftrc_njit(
+                        bin_emss[n_bins], bin_ems_count[n_bins], dx, dy, dz, L, W, H)
+                    if idx < 0:
+                        continue
+                    sc = ((L - x - dx) * (L - x - dx)
+                          + (W - y - dy) * (W - y - dy)
+                          + (H - z - dz) * (H - z - dz))
+                    if sc > best_score_n:
+                        best_score_n = sc
+                        best_rot_n = r
+                        best_x_n, best_y_n, best_z_n = x, y, z
+                elif mode == 1:
+                    idx, x, y, z = find_best_wall_njit(
+                        bin_emss[n_bins], bin_ems_count[n_bins], dx, dy, dz, L, W, H)
+                    if idx < 0:
+                        continue
+                    yz = ((W - y - dy) * (W - y - dy)
+                          + (H - z - dz) * (H - z - dz))
+                    BIG = (W + H) * (W + H) + 1
+                    cand = x * BIG - yz
+                    if cand < best_min_n:
+                        best_min_n = cand
+                        best_rot_n = r
+                        best_x_n, best_y_n, best_z_n = x, y, z
+                else:
+                    idx, x, y, z = find_best_corner_njit(
+                        bin_emss[n_bins], bin_ems_count[n_bins], dx, dy, dz, L, W, H)
+                    if idx < 0:
+                        continue
+                    cand = x + y + z
+                    if cand < best_min_n:
+                        best_min_n = cand
+                        best_rot_n = r
+                        best_x_n, best_y_n, best_z_n = x, y, z
+            if best_rot_n < 0:
+                placements_out[i, 5] = 0
+                continue
+            # First placement in a new bin is always on the floor (z=0),
+            # so no load-on-top check needed — but still respect cap.
+            r = best_rot_n
+            dx = dims_all[box_idx, r, 0]
+            dy = dims_all[box_idx, r, 1]
+            dz = dims_all[box_idx, r, 2]
+            new_count = commit_ems_njit(
+                bin_emss[n_bins], bin_ems_count[n_bins],
+                best_x_n, best_y_n, best_z_n,
+                best_x_n + dx, best_y_n + dy, best_z_n + dz,
+                scratch,
+            )
+            for j in range(new_count):
+                bin_emss[n_bins, j, 0, 0] = scratch[j, 0, 0]
+                bin_emss[n_bins, j, 0, 1] = scratch[j, 0, 1]
+                bin_emss[n_bins, j, 0, 2] = scratch[j, 0, 2]
+                bin_emss[n_bins, j, 1, 0] = scratch[j, 1, 0]
+                bin_emss[n_bins, j, 1, 1] = scratch[j, 1, 1]
+                bin_emss[n_bins, j, 1, 2] = scratch[j, 1, 2]
+            bin_ems_count[n_bins] = new_count
+            placements_out[i, 0] = n_bins
+            placements_out[i, 1] = best_rot_n
+            placements_out[i, 2] = best_x_n
+            placements_out[i, 3] = best_y_n
+            placements_out[i, 4] = best_z_n
+            placements_out[i, 5] = 1
+            pallet_weights[n_bins] += cand_weight
+            # First box at z=0; no top-load update needed.
+            n_bins += 1
+    return n_bins
+
+
+# ============================================================================
 # Python wrappers
 # ============================================================================
 
@@ -1086,6 +1518,14 @@ def warmup_jit() -> None:
     sku_best = np.array([[2, 1, 1, 0]], dtype=np.int64)
     _ = decode_precomputed_blocks_njit_mode(
         bps, n_rots, dims, sku_ids, sku_best, 100, 100, 100, 1, placements, 1)
+    # Constraint-aware variant (v3.10)
+    weights = np.zeros(n, dtype=np.float64)
+    mlot = np.full(n, 1e18, dtype=np.float64)
+    placements_cstr = np.zeros((n, 6), dtype=np.int64)
+    for mode in (0, 1, 2):
+        _ = decode_njit_mode_cstr(
+            bps, n_rots, dims, 100, 100, 100, 1, placements_cstr, mode,
+            weights, mlot, 1e18, 0.0)
     _JIT_WARMED = True
 
 
@@ -1101,6 +1541,16 @@ def decode_chromosome(
     sku_id_per_box: Optional[np.ndarray] = None,
     sku_best_block: Optional[np.ndarray] = None,
     sku_top_k_blocks: Optional[np.ndarray] = None,
+    # v3.10 constraint-aware path. When weights is None, the geometric-only
+    # decoder runs (BR / academic). When weights + mlot + pmw are provided
+    # and any constraint is finite, modes 0/1/2 use decode_njit_mode_cstr;
+    # modes 3/4/5 fall back to mode 0 constraint-aware (block/layer modes
+    # don't yet have constraint-aware variants).
+    weights: Optional[np.ndarray] = None,
+    mlot: Optional[np.ndarray] = None,
+    pallet_max_weight: float = _NO_LIMIT,
+    has_constraints: bool = False,
+    support_ratio: float = 0.0,
 ) -> PackResult:
     """Decode chromosome with chosen mode.
 
@@ -1113,6 +1563,11 @@ def decode_chromosome(
       5 = DFTRC + pre-computed top-K blocks (chromosome picks one of K
           candidates per SKU via VBO keys; needs sku_id_per_box and
           either sku_top_k_blocks or sku_best_block)
+
+    Constraint behavior (v3.10):
+      When has_constraints=True, modes 0/1/2 enforce Pallet.max_weight +
+      Box.max_load_on_top. Modes 3/4/5 fall back to constraint-aware mode 0
+      because their block/layer variants aren't constraint-aware yet.
     """
     n = len(boxes)
     if n == 0:
@@ -1125,12 +1580,17 @@ def decode_chromosome(
     H = int(round(pallet.height))
 
     placements_out = np.zeros((n, 6), dtype=np.int64)
-    if mode == 3:
+    # Route block/layer modes to mode 0 constraint-aware when constraints
+    # are present (block-mode constraint awareness deferred to a follow-up).
+    effective_mode = mode
+    if has_constraints and mode in (3, 4, 5):
+        effective_mode = 0
+    if effective_mode == 3:
         n_bins = decode_layer_njit(
             order, n_rots_arr, dims_all, L, W, H,
             max_pallets, placements_out,
         )
-    elif mode == 4:
+    elif effective_mode == 4:
         if sku_id_per_box is None:
             n_bins = decode_njit_mode(
                 order, n_rots_arr, dims_all, L, W, H,
@@ -1142,7 +1602,7 @@ def decode_chromosome(
                 order, n_rots_arr, dims_all, sku_id_per_box,
                 L, W, H, max_pallets, placements_out, n_skus,
             )
-    elif mode == 5:
+    elif effective_mode == 5:
         if sku_id_per_box is None:
             n_bins = decode_njit_mode(
                 order, n_rots_arr, dims_all, L, W, H,
@@ -1171,10 +1631,18 @@ def decode_chromosome(
                     L, W, H, max_pallets, placements_out, n_skus,
                 )
     else:
-        n_bins = decode_njit_mode(
-            order, n_rots_arr, dims_all, L, W, H,
-            max_pallets, placements_out, mode,
-        )
+        # Modes 0/1/2: geometric or constraint-aware.
+        if has_constraints and weights is not None and mlot is not None:
+            n_bins = decode_njit_mode_cstr(
+                order, n_rots_arr, dims_all, L, W, H,
+                max_pallets, placements_out, effective_mode,
+                weights, mlot, pallet_max_weight, support_ratio,
+            )
+        else:
+            n_bins = decode_njit_mode(
+                order, n_rots_arr, dims_all, L, W, H,
+                max_pallets, placements_out, effective_mode,
+            )
 
     pallets_state: List[PalletState] = []
     for b in range(int(n_bins)):
@@ -1226,6 +1694,11 @@ def decode_auto_mode(
     sku_best_block: Optional[np.ndarray] = None,
     sku_top_k_blocks: Optional[np.ndarray] = None,
     mode_cdf: Optional[np.ndarray] = None,
+    weights: Optional[np.ndarray] = None,
+    mlot: Optional[np.ndarray] = None,
+    pallet_max_weight: float = _NO_LIMIT,
+    has_constraints: bool = False,
+    support_ratio: float = 0.0,
 ) -> PackResult:
     """Use last key in chromosome to pick decoder mode (0..n_modes-1).
     Mode 5 (if n_modes >= 6) uses pre-computed top-K blocks per SKU.
@@ -1233,6 +1706,9 @@ def decode_auto_mode(
     If mode_cdf is provided, it remaps the uniform selector key via
     inverse-CDF so modes with higher weight get more chromosome share —
     the adaptive mode selector (v3.9).
+
+    If has_constraints=True, the constraint-aware decode path runs (v3.10).
+    support_ratio > 0 additionally enforces partial-support fraction.
     """
     n = len(boxes)
     if len(chrom) >= 2 * n + 1:
@@ -1244,7 +1720,11 @@ def decode_auto_mode(
                              n_rots_arr, dims_all, mode, max_pallets,
                              sku_id_per_box=sku_id_per_box,
                              sku_best_block=sku_best_block,
-                             sku_top_k_blocks=sku_top_k_blocks)
+                             sku_top_k_blocks=sku_top_k_blocks,
+                             weights=weights, mlot=mlot,
+                             pallet_max_weight=pallet_max_weight,
+                             has_constraints=has_constraints,
+                             support_ratio=support_ratio)
 
 
 # ============================================================================
@@ -1486,6 +1966,11 @@ def local_search_2opt(
     sku_best_block: Optional[np.ndarray] = None,
     sku_top_k_blocks: Optional[np.ndarray] = None,
     mode_cdf: Optional[np.ndarray] = None,
+    weights: Optional[np.ndarray] = None,
+    mlot: Optional[np.ndarray] = None,
+    pallet_max_weight: float = _NO_LIMIT,
+    has_constraints: bool = False,
+    support_ratio: float = 0.0,
     max_pallets: int = 1,
     seed: int = 99,
     verbose: bool = False,
@@ -1513,10 +1998,18 @@ def local_search_2opt(
             sku_id_per_box=sku_id_per_box,
             sku_best_block=sku_best_block,
             sku_top_k_blocks=sku_top_k_blocks,
-            mode_cdf=mode_cdf)
+            mode_cdf=mode_cdf,
+            weights=weights, mlot=mlot,
+            pallet_max_weight=pallet_max_weight,
+            has_constraints=has_constraints,
+            support_ratio=support_ratio)
     else:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
-            c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
+            c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets,
+            weights=weights, mlot=mlot,
+            pallet_max_weight=pallet_max_weight,
+            has_constraints=has_constraints,
+            support_ratio=support_ratio)
     res = decoder(current, boxes, pallet, config, n_rots_arr, dims_all,
                   max_pallets=max_pallets)
     best_fit = _fitness_pallet1(res, pallet)
@@ -1609,6 +2102,11 @@ def path_relinking(
     sku_best_block: Optional[np.ndarray] = None,
     sku_top_k_blocks: Optional[np.ndarray] = None,
     mode_cdf: Optional[np.ndarray] = None,
+    weights: Optional[np.ndarray] = None,
+    mlot: Optional[np.ndarray] = None,
+    pallet_max_weight: float = _NO_LIMIT,
+    has_constraints: bool = False,
+    support_ratio: float = 0.0,
     max_pallets: int = 1,
     max_evals: int = 100,
     verbose: bool = False,
@@ -1625,10 +2123,18 @@ def path_relinking(
             sku_id_per_box=sku_id_per_box,
             sku_best_block=sku_best_block,
             sku_top_k_blocks=sku_top_k_blocks,
-            mode_cdf=mode_cdf)
+            mode_cdf=mode_cdf,
+            weights=weights, mlot=mlot,
+            pallet_max_weight=pallet_max_weight,
+            has_constraints=has_constraints,
+            support_ratio=support_ratio)
     else:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
-            c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
+            c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets,
+            weights=weights, mlot=mlot,
+            pallet_max_weight=pallet_max_weight,
+            has_constraints=has_constraints,
+            support_ratio=support_ratio)
     n = len(boxes)
     res_a = decoder(chrom_a, boxes, pallet, config, n_rots_arr, dims_all,
                     max_pallets=max_pallets)
@@ -1677,6 +2183,11 @@ def lns_polish(
     sku_best_block: Optional[np.ndarray] = None,
     sku_top_k_blocks: Optional[np.ndarray] = None,
     mode_cdf: Optional[np.ndarray] = None,
+    weights: Optional[np.ndarray] = None,
+    mlot: Optional[np.ndarray] = None,
+    pallet_max_weight: float = _NO_LIMIT,
+    has_constraints: bool = False,
+    support_ratio: float = 0.0,
     max_pallets: int = 1,
     time_budget_s: float = 3.0,
     seed: int = 77,
@@ -1702,10 +2213,18 @@ def lns_polish(
             sku_id_per_box=sku_id_per_box,
             sku_best_block=sku_best_block,
             sku_top_k_blocks=sku_top_k_blocks,
-            mode_cdf=mode_cdf)
+            mode_cdf=mode_cdf,
+            weights=weights, mlot=mlot,
+            pallet_max_weight=pallet_max_weight,
+            has_constraints=has_constraints,
+            support_ratio=support_ratio)
     else:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
-            c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
+            c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets,
+            weights=weights, mlot=mlot,
+            pallet_max_weight=pallet_max_weight,
+            has_constraints=has_constraints,
+            support_ratio=support_ratio)
 
     current = best_chrom.copy()
     res = decoder(current, boxes, pallet, config, n_rots_arr, dims_all,
@@ -2194,6 +2713,15 @@ def brkga_pack_v35(
         boxes, sku_id_per_box, n_rots_arr, dims_all, L, W, H)
     sku_top_k_blocks = enumerate_top_k_blocks_per_sku(
         boxes, sku_id_per_box, n_rots_arr, dims_all, L, W, H, k_top=8)
+    weights_arr, mlot_arr, pallet_max_weight, has_constraints = \
+        precompute_constraint_arrays(boxes, pallet)
+    # Support-ratio comes from the PackerConfig (e.g. 0.8 default, 1.0 in
+    # BR geometric-only). Only enforced when has_constraints is True (i.e.
+    # workload has finite weights or load limits). On pure-geometric BR
+    # data has_constraints=False so support_ratio is left at 0 (disabled),
+    # preserving the BR throughput.
+    support_ratio_value = (
+        float(config.support_ratio) if has_constraints else 0.0)
     chrom_size = 2 * n + (1 if use_multi_decoder else 0)
     # mode_cdf is filled in by the adaptive-selector probe (Phase 1c, below).
     # While None, decode_auto_mode falls back to uniform mode allocation.
@@ -2204,11 +2732,19 @@ def brkga_pack_v35(
                 c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes,
                 sku_id_per_box=sku_id_per_box, sku_best_block=sku_best_block,
                 sku_top_k_blocks=sku_top_k_blocks,
-                mode_cdf=adaptive_state["mode_cdf"])
+                mode_cdf=adaptive_state["mode_cdf"],
+                weights=weights_arr, mlot=mlot_arr,
+                pallet_max_weight=pallet_max_weight,
+                has_constraints=has_constraints,
+                support_ratio=support_ratio_value)
     else:
         def decoder(c, b, p, cfg, na, da, max_pallets=1):
             return decode_chromosome(
-                c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets)
+                c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets,
+                weights=weights_arr, mlot=mlot_arr,
+                pallet_max_weight=pallet_max_weight,
+                has_constraints=has_constraints,
+                support_ratio=support_ratio_value)
 
     t_start = time.time()
 
@@ -2448,6 +2984,10 @@ def brkga_pack_v35(
             sku_best_block=sku_best_block,
             sku_top_k_blocks=sku_top_k_blocks,
             mode_cdf=adaptive_state["mode_cdf"],
+            weights=weights_arr, mlot=mlot_arr,
+            pallet_max_weight=pallet_max_weight,
+            has_constraints=has_constraints,
+            support_ratio=support_ratio_value,
             max_pallets=max_pallets, max_evals=50, verbose=verbose,
         )
         if pr_fit < best_fitness - 1e-9:
@@ -2469,6 +3009,10 @@ def brkga_pack_v35(
             sku_best_block=sku_best_block,
             sku_top_k_blocks=sku_top_k_blocks,
             mode_cdf=adaptive_state["mode_cdf"],
+            weights=weights_arr, mlot=mlot_arr,
+            pallet_max_weight=pallet_max_weight,
+            has_constraints=has_constraints,
+            support_ratio=support_ratio_value,
             max_pallets=max_pallets,
             seed=seed + 999, verbose=verbose,
         )
@@ -2491,6 +3035,10 @@ def brkga_pack_v35(
             sku_best_block=sku_best_block,
             sku_top_k_blocks=sku_top_k_blocks,
             mode_cdf=adaptive_state["mode_cdf"],
+            weights=weights_arr, mlot=mlot_arr,
+            pallet_max_weight=pallet_max_weight,
+            has_constraints=has_constraints,
+            support_ratio=support_ratio_value,
             max_pallets=max_pallets,
             time_budget_s=lns_budget_s,
             seed=seed + 1234, verbose=verbose,
