@@ -81,8 +81,16 @@ EXTENSION_MODULES = [
         extra_compile_args=EXTRA_COMPILE_ARGS,
         extra_link_args=EXTRA_LINK_ARGS,
     ),
+    # Phase 2: constraint helpers (_check_load_on_top, _check_cog_envelope,
+    # _apply_*). Numba fallback in jit_constraints.py stays as reference.
+    Extension(
+        name="pallet_packer._brkga_core.jit_constraints_cy",
+        sources=[str(SRC / "jit_constraints_cy.pyx")],
+        include_dirs=[np.get_include()],
+        extra_compile_args=EXTRA_COMPILE_ARGS,
+        extra_link_args=EXTRA_LINK_ARGS,
+    ),
     # Future port targets:
-    # Extension("pallet_packer._brkga_core.jit_constraints_cy", ...),
     # Extension("pallet_packer._brkga_core.jit_decoders_geom_cy", ...),
     # Extension("pallet_packer._brkga_core.jit_decoders_cstr_cy", ...),
 ]
