@@ -1,0 +1,26 @@
+[build-system]
+# setuptools >=61 supports the modern [project] table; cython 3.x is the
+# stable API; numpy is needed at build time so cythonize can resolve
+# `numpy.get_include()` for the .pyx files that use `cimport numpy`.
+requires = ["setuptools>=61", "wheel>=0.40", "cython>=3.0,<4.0", "numpy>=2.4"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pallet-packer"
+version = "3.13.0"
+description = "3D pallet packing with hybrid BRKGA + Cython-accelerated decoders"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.4,<2.5",
+    # Numba is kept as the pure-Python (well, JIT) fallback when the
+    # Cython extensions aren't built. Same numeric semantics as Cython —
+    # bit-identical results at fixed seed.
+    "numba>=0.65,<0.66",
+    "ortools>=9.10,<10.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["pallet_packer*"]
+
+[tool.cython-lint]
+max-line-length = 100
