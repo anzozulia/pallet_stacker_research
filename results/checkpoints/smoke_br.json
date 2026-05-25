@@ -1,0 +1,38 @@
+[
+ {
+  "set_id": "BR1",
+  "instance_id": 1,
+  "n_boxes": 112,
+  "config": "v3.10",
+  "util_pallet1": 0.9104658018280058,
+  "runtime_s": 20.190143823623657,
+  "validator_errors": 2
+ },
+ {
+  "set_id": "BR1",
+  "instance_id": 2,
+  "n_boxes": 138,
+  "config": "v3.10",
+  "util_pallet1": 0.9102795249657523,
+  "runtime_s": 20.125216484069824,
+  "validator_errors": 30
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 1,
+  "n_boxes": 94,
+  "config": "v3.10",
+  "util_pallet1": 0.9402371980769448,
+  "runtime_s": 20.352389335632324,
+  "validator_errors": 24
+ },
+ {
+  "set_id": "BR3",
+  "instance_id": 2,
+  "n_boxes": 115,
+  "config": "v3.10",
+  "util_pallet1": 0.9496330295962528,
+  "runtime_s": 20.3645601272583,
+  "validator_errors": 12
+ }
+]

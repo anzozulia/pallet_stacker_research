@@ -72,8 +72,16 @@ EXTENSION_MODULES = [
         extra_compile_args=EXTRA_COMPILE_ARGS,
         extra_link_args=EXTRA_LINK_ARGS,
     ),
-    # Port targets — added as each .pyx lands:
-    # Extension("pallet_packer._brkga_core.jit_primitives_cy", ...),
+    # Phase 1: geometric scoring primitives (find_best_wall/corner/in_slab).
+    # Numba fallback in jit_primitives.py stays as the reference impl.
+    Extension(
+        name="pallet_packer._brkga_core.jit_primitives_cy",
+        sources=[str(SRC / "jit_primitives_cy.pyx")],
+        include_dirs=[np.get_include()],
+        extra_compile_args=EXTRA_COMPILE_ARGS,
+        extra_link_args=EXTRA_LINK_ARGS,
+    ),
+    # Future port targets:
     # Extension("pallet_packer._brkga_core.jit_constraints_cy", ...),
     # Extension("pallet_packer._brkga_core.jit_decoders_geom_cy", ...),
     # Extension("pallet_packer._brkga_core.jit_decoders_cstr_cy", ...),
