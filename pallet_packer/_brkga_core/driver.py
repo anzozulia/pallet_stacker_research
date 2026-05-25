@@ -1,0 +1,575 @@
+"""
+pallet_packer._brkga_core.driver — brkga_pack_v35 main orchestrator.
+
+Coordinates every phase of the v3.5 → v3.12 hybrid BRKGA:
+
+  Phase 0   v2 PalletPacker warm-start (cheap, gives a strong baseline)
+  Phase 1   smart-init populations (5 informed orderings × 6 modes)
+  Phase 1b  optional SKU-aware mini-BRKGA (off by default)
+  Phase 1c  optional adaptive mode probe (off by default)
+  Phase 2   main BRKGA loop with migration + selection pressure
+  Phase 3a  path relinking between top-2 elites
+  Phase 3b  position-based local search
+  Phase 3c  optional LNS polish
+  Phase 4   v2 hybrid polish (return max of BRKGA vs v2 baseline)
+
+The driver also handles n_restarts > 1 (re-enters itself K times with
+different seeds, returns the best result).
+"""
+from __future__ import annotations
+
+import time
+from typing import List, Optional
+
+import numpy as np
+
+from ..models import Box, Pallet, PackerConfig
+from ..packer import PackResult
+from ..brkga_v3_fast import _fitness_pallet1
+from .precompute import (
+    _NO_LIMIT,
+    precompute_box_dims_and_sku,
+    precompute_constraint_arrays,
+    precompute_cog_envelope,
+)
+from .blocks import (
+    enumerate_best_block_per_sku,
+    enumerate_top_k_blocks_per_sku,
+)
+from .chromosome import (
+    chromosome_from_order,
+    make_informed_chromosomes,
+    chromosome_from_v2_result,
+)
+from .dispatch import (
+    warmup_jit,
+    decode_chromosome,
+    decode_auto_mode,
+)
+from .polish import local_search_2opt, path_relinking, lns_polish
+from .adaptive import (
+    probe_decoder_modes,
+    mode_weights_from_fitness,
+    mode_weights_to_cdf,
+)
+from .sku_aware import brkga_sku_aware_search
+
+
+def brkga_pack_v35(
+    boxes: List[Box],
+    pallet: Pallet,
+    config: PackerConfig,
+    *,
+    time_limit_s: float = 30.0,
+    max_pallets: int = 1,
+    seed: int = 42,
+    # BRKGA params
+    population_size: int = 600,
+    generations: int = 1000,
+    n_populations: int = 3,
+    elite_fraction: float = 0.20,
+    mutant_fraction: float = 0.15,
+    p_elite_inherit: float = 0.70,
+    migration_interval: int = 15,
+    migrants_per_swap: int = 3,
+    patience: int = 100,
+    # v3.5 features
+    use_multi_decoder: bool = True,
+    n_modes: int = 6,  # 6 = DFTRC + wall + corner + layer + DFTRC+blocks + precomp-blocks
+    use_v2_seed: bool = True,
+    use_smart_init: bool = True,
+    use_local_search: bool = True,
+    local_search_budget_s: float = 4.0,
+    use_lns: bool = False,
+    lns_budget_s: float = 3.0,
+    # SKU-aware mini-BRKGA (v3.7, experimental): runs first with small budget,
+    # uses 2S+1 chromosome (S=#SKUs). Designed to help homogeneous loads, but
+    # empirical n=3 test showed neutral-to-negative impact (-0.10 to +0.70pp
+    # depending on set, -0.59 on BR7). Default OFF; enable via flag for
+    # experimentation. See docs/reports/17_v37_sku_aware.md.
+    use_sku_aware: bool = False,
+    sku_aware_budget_s: float = 5.0,
+    use_v2_hybrid_polish: bool = True,
+    # Adaptive mode selector (v3.9, experimental): probe each decoder
+    # mode on a small seed set, then bias the selector keyspace toward
+    # better modes via inverse-CDF lookup. Empirically NEUTRAL on BR
+    # (n=5 mean Δ ≈ -0.08pp; W/T/L = 3/12/5 across BR1/3/5/7) — the
+    # probe only sees performance on smart-init chromosomes and fails
+    # to predict mode performance on random/crossover chromosomes that
+    # dominate BRKGA's exploration. BRKGA's elite-survival mechanism
+    # already biases toward good modes implicitly. Default OFF; kept
+    # for future experimentation with multi-seed probing or mid-run
+    # adaptation. See docs/reports/20_v39_adaptive_selector.md.
+    use_adaptive_mode_selector: bool = False,
+    adaptive_probe_seeds: int = 4,
+    # Multi-restart: run K times with different seeds, take best.
+    # Reduces variance at the cost of less compute per run.
+    n_restarts: int = 1,
+    verbose: bool = False,
+) -> PackResult:
+    """v3.5: hybrid BRKGA with all quality improvements."""
+    # If multi-restart, recurse into single-run with split budget.
+    if n_restarts > 1:
+        time_per = time_limit_s / n_restarts
+        best_result: Optional[PackResult] = None
+        best_util = -1.0
+        cap = pallet.length * pallet.width * pallet.height
+        for r_idx in range(n_restarts):
+            res = brkga_pack_v35(
+                boxes, pallet, config,
+                time_limit_s=time_per, max_pallets=max_pallets,
+                seed=seed + r_idx * 17,
+                population_size=population_size, generations=generations,
+                n_populations=n_populations,
+                elite_fraction=elite_fraction, mutant_fraction=mutant_fraction,
+                p_elite_inherit=p_elite_inherit,
+                migration_interval=migration_interval,
+                migrants_per_swap=migrants_per_swap,
+                patience=patience,
+                use_multi_decoder=use_multi_decoder,
+                n_modes=n_modes,
+                use_v2_seed=use_v2_seed and r_idx == 0,  # only first run uses v2 (slow)
+                use_smart_init=use_smart_init,
+                use_local_search=use_local_search,
+                local_search_budget_s=local_search_budget_s,
+                use_lns=use_lns,
+                lns_budget_s=lns_budget_s,
+                use_sku_aware=use_sku_aware,
+                sku_aware_budget_s=sku_aware_budget_s,
+                use_v2_hybrid_polish=use_v2_hybrid_polish and r_idx == 0,
+                use_adaptive_mode_selector=use_adaptive_mode_selector,
+                adaptive_probe_seeds=adaptive_probe_seeds,
+                n_restarts=1,
+                verbose=verbose,
+            )
+            used = (sum(p.box.volume for p in res.pallets[0].placements)
+                    if res.pallets else 0)
+            util = used / cap if cap > 0 else 0.0
+            if verbose:
+                print(f"  [v3.5 multi-restart] run {r_idx+1}/{n_restarts}: util={util*100:.2f}%")
+            if util > best_util:
+                best_util = util
+                best_result = res
+        return best_result if best_result is not None else PackResult(
+            pallets=[], unpacked=list(boxes))
+    # ----------------------- single-run path -----------------------
+    n = len(boxes)
+    if n == 0:
+        return PackResult(pallets=[], unpacked=[])
+
+    warmup_jit()
+    n_rots_arr, dims_all, sku_id_per_box = precompute_box_dims_and_sku(boxes)
+    L = int(round(pallet.length))
+    W = int(round(pallet.width))
+    H = int(round(pallet.height))
+    sku_best_block = enumerate_best_block_per_sku(
+        boxes, sku_id_per_box, n_rots_arr, dims_all, L, W, H)
+    sku_top_k_blocks = enumerate_top_k_blocks_per_sku(
+        boxes, sku_id_per_box, n_rots_arr, dims_all, L, W, H, k_top=8)
+    weights_arr, mlot_arr, rfs_arr, pallet_max_weight, has_constraints = \
+        precompute_constraint_arrays(boxes, pallet)
+    # Support-ratio comes from the PackerConfig (e.g. 0.8 default, 1.0 in
+    # BR geometric-only). Only enforced when has_constraints is True (i.e.
+    # workload has finite weights or load limits). On pure-geometric BR
+    # data has_constraints=False so support_ratio is left at 0 (disabled),
+    # preserving the BR throughput.
+    support_ratio_value = (
+        float(config.support_ratio) if has_constraints else 0.0)
+    # v3.12 config-derived scalars: centroid + CoG envelope + overhang.
+    # All gated by has_constraints — on geometric BR the JIT short-circuits.
+    if has_constraints:
+        require_centroid_value = (
+            1 if config.require_centroid_supported else 0)
+        cog_x_min_value, cog_x_max_value, \
+            cog_y_min_value, cog_y_max_value, \
+            cog_min_load_frac_value, _cog_active_bool = \
+            precompute_cog_envelope(pallet, config)
+        cog_active_value = 1 if _cog_active_bool else 0
+        max_overhang_value = (
+            float(pallet.max_overhang) if config.allow_pallet_overhang else 0.0)
+    else:
+        require_centroid_value = 0
+        cog_x_min_value, cog_x_max_value = -1e18, 1e18
+        cog_y_min_value, cog_y_max_value = -1e18, 1e18
+        cog_min_load_frac_value = 0.0
+        cog_active_value = 0
+        max_overhang_value = 0.0
+    chrom_size = 2 * n + (1 if use_multi_decoder else 0)
+    # mode_cdf is filled in by the adaptive-selector probe (Phase 1c, below).
+    # While None, decode_auto_mode falls back to uniform mode allocation.
+    adaptive_state = {"mode_cdf": None, "mode_weights": None}
+    if use_multi_decoder:
+        def decoder(c, b, p, cfg, na, da, max_pallets=1):
+            return decode_auto_mode(
+                c, b, p, cfg, na, da, max_pallets=max_pallets, n_modes=n_modes,
+                sku_id_per_box=sku_id_per_box, sku_best_block=sku_best_block,
+                sku_top_k_blocks=sku_top_k_blocks,
+                mode_cdf=adaptive_state["mode_cdf"],
+                weights=weights_arr, mlot=mlot_arr,
+                pallet_max_weight=pallet_max_weight,
+                has_constraints=has_constraints,
+                support_ratio=support_ratio_value,
+                rfs=rfs_arr,
+                require_centroid=require_centroid_value,
+                cog_x_min=cog_x_min_value, cog_x_max=cog_x_max_value,
+                cog_y_min=cog_y_min_value, cog_y_max=cog_y_max_value,
+                cog_min_load_frac=cog_min_load_frac_value,
+                cog_active=cog_active_value,
+                max_overhang=max_overhang_value)
+    else:
+        def decoder(c, b, p, cfg, na, da, max_pallets=1):
+            return decode_chromosome(
+                c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets,
+                weights=weights_arr, mlot=mlot_arr,
+                pallet_max_weight=pallet_max_weight,
+                has_constraints=has_constraints,
+                support_ratio=support_ratio_value,
+                rfs=rfs_arr,
+                require_centroid=require_centroid_value,
+                cog_x_min=cog_x_min_value, cog_x_max=cog_x_max_value,
+                cog_y_min=cog_y_min_value, cog_y_max=cog_y_max_value,
+                cog_min_load_frac=cog_min_load_frac_value,
+                cog_active=cog_active_value,
+                max_overhang=max_overhang_value)
+
+    t_start = time.time()
+
+    # ----------------------------------------------------------------------
+    # Phase 0: v2 seed (cheap, gives us a strong baseline chromosome)
+    # ----------------------------------------------------------------------
+    v2_result: Optional[PackResult] = None
+    v2_seed_chrom: Optional[np.ndarray] = None
+    v2_seed_chroms_per_mode: List[np.ndarray] = []
+    if use_v2_seed:
+        try:
+            from ..packer import PalletPacker
+            v2_packer = PalletPacker(pallet, config)
+            v2_result = v2_packer.pack(boxes)
+            if use_multi_decoder:
+                for m in range(n_modes):
+                    cs = chromosome_from_v2_result(v2_result, boxes, n_rots_arr,
+                                                    decoder_mode=m,
+                                                    n_modes=n_modes,
+                                                    rng=np.random.default_rng(seed + 7 + m))
+                    if cs is not None:
+                        v2_seed_chroms_per_mode.append(cs)
+            else:
+                v2_seed_chrom = chromosome_from_v2_result(
+                    v2_result, boxes, n_rots_arr,
+                    rng=np.random.default_rng(seed + 7))
+        except Exception as e:
+            if verbose:
+                print(f"  [v3.5] v2 seed failed: {e}")
+    v2_time = time.time() - t_start
+    if verbose:
+        u = 0
+        if v2_result and v2_result.pallets:
+            cap = pallet.length * pallet.width * pallet.height
+            u = sum(p.box.volume for p in v2_result.pallets[0].placements) / cap * 100
+        print(f"  [v3.5] v2 seed: {v2_time:.2f}s, v2 util={u:.2f}%")
+
+    # ----------------------------------------------------------------------
+    # Phase 1: Smart init + random fill of populations
+    # ----------------------------------------------------------------------
+    K = max(1, n_populations)
+    pop_size = max(20, population_size // K)
+    n_elite = max(1, int(pop_size * elite_fraction))
+    n_mutant = max(1, int(pop_size * mutant_fraction))
+    n_cross = max(0, pop_size - n_elite - n_mutant)
+
+    rngs = [np.random.default_rng(seed + i) for i in range(K)]
+    pops = [rngs[i].random((pop_size, chrom_size)) for i in range(K)]
+
+    if use_smart_init or use_v2_seed:
+        # Inject informed chromosomes into the front of pop 0
+        smart = []
+        if use_smart_init:
+            if use_multi_decoder:
+                for m in range(n_modes):
+                    smart.extend(make_informed_chromosomes(
+                        boxes, n_rots_arr, decoder_mode=m,
+                        n_modes=n_modes, seed=seed + 100 + m))
+            else:
+                smart.extend(make_informed_chromosomes(
+                    boxes, n_rots_arr, decoder_mode=None, seed=seed + 100))
+        if v2_seed_chrom is not None:
+            smart.insert(0, v2_seed_chrom)
+        if v2_seed_chroms_per_mode:
+            for c in v2_seed_chroms_per_mode:
+                smart.insert(0, c)
+        # Insert into front of pop 0 (and spread across pops if K > 1)
+        for i, c in enumerate(smart[:pop_size]):
+            pops[0][i] = c[:chrom_size]
+        # Also seed pop 1 with one smart chromosome if K > 1
+        if K > 1 and smart:
+            for i, c in enumerate(smart[:pop_size // 2]):
+                idx_in_pop1 = i % pop_size
+                pops[1 % K][idx_in_pop1] = c[:chrom_size]
+
+    # ----------------------------------------------------------------------
+    # Phase 1b: SKU-aware mini-BRKGA (v3.7)
+    # ----------------------------------------------------------------------
+    # Runs early with small budget. Best result becomes a strong seed for
+    # main BRKGA (Phase 2). Especially crucial when S << N (BR1, real-world
+    # homogeneous stock).
+    sku_aware_result: Optional[PackResult] = None
+    sku_aware_chrom: Optional[np.ndarray] = None
+    sku_aware_time = 0.0
+    if use_sku_aware and sku_aware_budget_s > 0:
+        t_sku = time.time()
+        sku_aware_result, sku_aware_chrom, sku_aware_decodes = brkga_sku_aware_search(
+            boxes, pallet, config, n_rots_arr, dims_all, sku_id_per_box,
+            time_budget_s=sku_aware_budget_s,
+            seed=seed + 11, max_pallets=max_pallets, verbose=verbose,
+        )
+        sku_aware_time = time.time() - t_sku
+        if verbose and sku_aware_result is not None:
+            sku_u = (1 - _fitness_pallet1(sku_aware_result, pallet)) * 100
+            print(f"  [v3.5] SKU-aware: util={sku_u:.2f}% in {sku_aware_time:.2f}s "
+                  f"({sku_aware_decodes} decodes)")
+
+    # ----------------------------------------------------------------------
+    # Phase 1c: Adaptive mode selector probe (v3.9)
+    # ----------------------------------------------------------------------
+    adaptive_time = 0.0
+    if use_adaptive_mode_selector and use_multi_decoder and n_modes > 1:
+        t_ad = time.time()
+        # Pick up to adaptive_probe_seeds diverse chromosomes from pop[0]
+        # (which already contains v2 seed + smart-init chromosomes).
+        k_seeds = max(1, min(adaptive_probe_seeds, pops[0].shape[0]))
+        probe_chroms = [pops[0][i].copy() for i in range(k_seeds)]
+        mode_fits = probe_decoder_modes(
+            probe_chroms, boxes, pallet, config,
+            n_rots_arr, dims_all, n_modes,
+            max_pallets=max_pallets,
+            sku_id_per_box=sku_id_per_box,
+            sku_best_block=sku_best_block,
+            sku_top_k_blocks=sku_top_k_blocks,
+        )
+        # Only adapt if there is a meaningful spread; otherwise stay uniform.
+        if mode_fits.max() - mode_fits.min() > 0.005:  # > 0.5 pp spread
+            w = mode_weights_from_fitness(mode_fits)
+            adaptive_state["mode_weights"] = w
+            adaptive_state["mode_cdf"] = mode_weights_to_cdf(w)
+        adaptive_time = time.time() - t_ad
+        if verbose:
+            mfp = [f"m{m}={mode_fits[m]*100:.2f}%" for m in range(n_modes)]
+            wp = (None if adaptive_state["mode_weights"] is None
+                  else [f"m{m}={adaptive_state['mode_weights'][m]:.2f}"
+                        for m in range(n_modes)])
+            print(f"  [v3.5 adaptive] probe: {' '.join(mfp)} "
+                  f"in {adaptive_time:.2f}s")
+            if wp is not None:
+                print(f"  [v3.5 adaptive] weights: {' '.join(wp)}")
+
+    # ----------------------------------------------------------------------
+    # Phase 2: BRKGA
+    # ----------------------------------------------------------------------
+    # Reserve budget for LS + PR (if enabled)
+    polish_budget = ((local_search_budget_s if use_local_search else 0)
+                     + (lns_budget_s if use_lns else 0))
+    brkga_budget = (time_limit_s - v2_time - sku_aware_time
+                    - adaptive_time - polish_budget)
+    brkga_budget = max(1.0, brkga_budget)
+
+    best_fitness = float('inf')
+    best_result: Optional[PackResult] = None
+    best_chrom: Optional[np.ndarray] = None
+    # If SKU-aware found a result, seed best with it
+    if sku_aware_result is not None and sku_aware_chrom is not None:
+        sku_fit = _fitness_pallet1(sku_aware_result, pallet)
+        best_fitness = float(sku_fit)
+        best_result = sku_aware_result
+        best_chrom = sku_aware_chrom
+        # Also inject SKU-aware chromosome into pop[0] as seed
+        if (sku_aware_chrom is not None and chrom_size == len(sku_aware_chrom)
+                and pops[0].shape[0] > 0):
+            pops[0][0] = sku_aware_chrom.copy()
+    # Track top-2 distinct elites for path relinking
+    second_best_fitness = float('inf')
+    second_best_chrom: Optional[np.ndarray] = None
+    gens_no_improve = 0
+    t0 = time.time()
+    total_decodes = 0
+    pop_fits = [np.zeros(pop_size) for _ in range(K)]
+
+    for gen in range(generations):
+        if time.time() - t0 > brkga_budget:
+            if verbose:
+                print(f"  [v3.5 BRKGA] gen {gen}: time hit, decodes={total_decodes}")
+            break
+
+        for k in range(K):
+            fits = pop_fits[k]
+            for i in range(pop_size):
+                res = decoder(pops[k][i], boxes, pallet, config,
+                              n_rots_arr, dims_all, max_pallets=max_pallets)
+                fits[i] = _fitness_pallet1(res, pallet)
+                total_decodes += 1
+                if fits[i] < best_fitness - 1e-9:
+                    # Demote current best to second
+                    second_best_fitness = best_fitness
+                    second_best_chrom = best_chrom
+                    best_fitness = float(fits[i])
+                    best_result = res
+                    best_chrom = pops[k][i].copy()
+                    gens_no_improve = 0
+                    if verbose:
+                        print(f"  [v3.5 BRKGA] gen {gen} pop {k}: util={(1-best_fitness)*100:.2f}%")
+                elif (fits[i] < second_best_fitness - 1e-9 and
+                      fits[i] > best_fitness + 1e-9):
+                    # Update second-best (distinct from best)
+                    second_best_fitness = float(fits[i])
+                    second_best_chrom = pops[k][i].copy()
+
+        gens_no_improve += 1
+        if gens_no_improve >= patience:
+            if verbose:
+                print(f"  [v3.5 BRKGA] gen {gen}: patience, decodes={total_decodes}")
+            break
+
+        # Migration
+        if K > 1 and gen > 0 and gen % migration_interval == 0:
+            for k in range(K):
+                src = k
+                dst = (k + 1) % K
+                src_sorted = np.argsort(pop_fits[src])[:migrants_per_swap]
+                dst_sorted = np.argsort(pop_fits[dst])[-migrants_per_swap:]
+                for s, d in zip(src_sorted, dst_sorted):
+                    pops[dst][d] = pops[src][s].copy()
+
+        # Evolve
+        new_pops = []
+        for k in range(K):
+            sorted_idx = np.argsort(pop_fits[k])
+            new_pop = np.zeros_like(pops[k])
+            new_pop[:n_elite] = pops[k][sorted_idx[:n_elite]]
+            new_pop[n_elite:n_elite + n_mutant] = rngs[k].random((n_mutant, chrom_size))
+            elite_pool = pops[k][sorted_idx[:n_elite]]
+            non_elite_pool = pops[k][sorted_idx[n_elite:]]
+            if n_cross > 0 and len(non_elite_pool) > 0:
+                pa_idx = rngs[k].integers(0, n_elite, size=n_cross)
+                pb_idx = rngs[k].integers(0, len(non_elite_pool), size=n_cross)
+                pa_parents = elite_pool[pa_idx]
+                pb_parents = non_elite_pool[pb_idx]
+                mask = rngs[k].random((n_cross, chrom_size)) < p_elite_inherit
+                new_pop[n_elite + n_mutant:] = np.where(mask, pa_parents, pb_parents)
+            new_pops.append(new_pop)
+        pops = new_pops
+
+    # ----------------------------------------------------------------------
+    # Phase 3a: Path relinking between top-2 elites (cheap)
+    # ----------------------------------------------------------------------
+    if (best_chrom is not None and second_best_chrom is not None
+            and use_local_search):
+        pr_res, pr_chrom, pr_fit = path_relinking(
+            best_chrom, second_best_chrom,
+            boxes, pallet, config, n_rots_arr, dims_all,
+            multi_decoder=use_multi_decoder, n_modes=n_modes,
+            sku_id_per_box=sku_id_per_box,
+            sku_best_block=sku_best_block,
+            sku_top_k_blocks=sku_top_k_blocks,
+            mode_cdf=adaptive_state["mode_cdf"],
+            weights=weights_arr, mlot=mlot_arr,
+            pallet_max_weight=pallet_max_weight,
+            has_constraints=has_constraints,
+            support_ratio=support_ratio_value,
+            rfs=rfs_arr,
+            require_centroid=require_centroid_value,
+            cog_x_min=cog_x_min_value, cog_x_max=cog_x_max_value,
+            cog_y_min=cog_y_min_value, cog_y_max=cog_y_max_value,
+            cog_min_load_frac=cog_min_load_frac_value,
+            cog_active=cog_active_value,
+            max_overhang=max_overhang_value,
+            max_pallets=max_pallets, max_evals=50, verbose=verbose,
+        )
+        if pr_fit < best_fitness - 1e-9:
+            best_fitness = pr_fit
+            best_result = pr_res
+            best_chrom = pr_chrom
+            if verbose:
+                print(f"  [v3.5] path relinking improved: util={(1-best_fitness)*100:.2f}%")
+
+    # ----------------------------------------------------------------------
+    # Phase 3b: Local search polish
+    # ----------------------------------------------------------------------
+    if use_local_search and best_chrom is not None:
+        ls_res, ls_chrom, accepts = local_search_2opt(
+            best_chrom, boxes, pallet, config, n_rots_arr, dims_all,
+            time_budget_s=local_search_budget_s,
+            multi_decoder=use_multi_decoder, n_modes=n_modes,
+            sku_id_per_box=sku_id_per_box,
+            sku_best_block=sku_best_block,
+            sku_top_k_blocks=sku_top_k_blocks,
+            mode_cdf=adaptive_state["mode_cdf"],
+            weights=weights_arr, mlot=mlot_arr,
+            pallet_max_weight=pallet_max_weight,
+            has_constraints=has_constraints,
+            support_ratio=support_ratio_value,
+            rfs=rfs_arr,
+            require_centroid=require_centroid_value,
+            cog_x_min=cog_x_min_value, cog_x_max=cog_x_max_value,
+            cog_y_min=cog_y_min_value, cog_y_max=cog_y_max_value,
+            cog_min_load_frac=cog_min_load_frac_value,
+            cog_active=cog_active_value,
+            max_overhang=max_overhang_value,
+            max_pallets=max_pallets,
+            seed=seed + 999, verbose=verbose,
+        )
+        ls_fit = _fitness_pallet1(ls_res, pallet)
+        if ls_fit < best_fitness - 1e-9:
+            best_fitness = ls_fit
+            best_result = ls_res
+            best_chrom = ls_chrom
+            if verbose:
+                print(f"  [v3.5] local search improved: util={(1-best_fitness)*100:.2f}% ({accepts} accepts)")
+
+    # ----------------------------------------------------------------------
+    # Phase 3c: Large Neighborhood Search (LNS) polish
+    # ----------------------------------------------------------------------
+    if use_lns and best_chrom is not None:
+        lns_res, lns_chrom, lns_accepts = lns_polish(
+            best_chrom, boxes, pallet, config, n_rots_arr, dims_all,
+            multi_decoder=use_multi_decoder, n_modes=n_modes,
+            sku_id_per_box=sku_id_per_box,
+            sku_best_block=sku_best_block,
+            sku_top_k_blocks=sku_top_k_blocks,
+            mode_cdf=adaptive_state["mode_cdf"],
+            weights=weights_arr, mlot=mlot_arr,
+            pallet_max_weight=pallet_max_weight,
+            has_constraints=has_constraints,
+            support_ratio=support_ratio_value,
+            rfs=rfs_arr,
+            require_centroid=require_centroid_value,
+            cog_x_min=cog_x_min_value, cog_x_max=cog_x_max_value,
+            cog_y_min=cog_y_min_value, cog_y_max=cog_y_max_value,
+            cog_min_load_frac=cog_min_load_frac_value,
+            cog_active=cog_active_value,
+            max_overhang=max_overhang_value,
+            max_pallets=max_pallets,
+            time_budget_s=lns_budget_s,
+            seed=seed + 1234, verbose=verbose,
+        )
+        lns_fit = _fitness_pallet1(lns_res, pallet)
+        if lns_fit < best_fitness - 1e-9:
+            best_fitness = lns_fit
+            best_result = lns_res
+            best_chrom = lns_chrom
+            if verbose:
+                print(f"  [v3.5] LNS improved: util={(1-best_fitness)*100:.2f}% ({lns_accepts} accepts)")
+
+    # ----------------------------------------------------------------------
+    # Phase 4: Compare with v2 hybrid (if enabled)
+    # ----------------------------------------------------------------------
+    if use_v2_hybrid_polish and v2_result is not None and v2_result.pallets:
+        v2_fit = _fitness_pallet1(v2_result, pallet)
+        if v2_fit < best_fitness - 1e-9:
+            if verbose:
+                print(f"  [v3.5] v2 hybrid wins: util={(1-v2_fit)*100:.2f}%")
+            return v2_result
+
+    if best_result is None:
+        if v2_result is not None:
+            return v2_result
+        return PackResult(pallets=[], unpacked=list(boxes))
+    return best_result

@@ -11,3 +11,4 @@ __pycache__/
 # tracked (research record).
 results/*.md
 /packing_result.json
+.claude/
