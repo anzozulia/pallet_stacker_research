@@ -55,7 +55,7 @@ cdef double _NO_LIMIT = 1e18
 # Internal nogil cores.
 # ---------------------------------------------------------------------------
 
-cdef inline bint _ck_load_on_top(
+cdef bint _ck_load_on_top(
     const i64[:, ::1] placements_out,    # (n, 6)
     const i64[:, :, ::1] dims_all,       # (n_boxes, n_rots_max, 3)
     const i64[::1] bps_order,            # (n_placed,)
@@ -153,7 +153,7 @@ cdef inline bint _ck_load_on_top(
     return True
 
 
-cdef inline bint _ck_cog_envelope(
+cdef bint _ck_cog_envelope(
     i64 cand_x, i64 cand_y,
     i64 cand_dx, i64 cand_dy,
     double cand_weight,
@@ -187,7 +187,7 @@ cdef inline bint _ck_cog_envelope(
     return True
 
 
-cdef inline void _ap_cog_contribution(
+cdef void _ap_cog_contribution(
     i64 cand_x, i64 cand_y,
     i64 cand_dx, i64 cand_dy,
     double cand_weight,
@@ -202,7 +202,7 @@ cdef inline void _ap_cog_contribution(
     pallet_sum_yw[cand_pallet] += cand_weight * (<double>cand_y + 0.5 * <double>cand_dy)
 
 
-cdef inline void _ap_load_contribution(
+cdef void _ap_load_contribution(
     const i64[:, ::1] placements_out,
     const i64[:, :, ::1] dims_all,
     const i64[::1] bps_order,

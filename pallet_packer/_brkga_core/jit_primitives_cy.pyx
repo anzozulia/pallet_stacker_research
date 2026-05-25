@@ -32,10 +32,7 @@ brkga_v3_5 import find_best_wall_njit` continues to work via __init__).
 """
 import numpy as np
 cimport numpy as cnp
-from libc.stdint cimport int64_t
-
-# Alias to keep the body readable.
-ctypedef int64_t i64
+# i64 + int64_t come from the .pxd header.
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +40,7 @@ ctypedef int64_t i64
 # touching Python state. Will be called from the Cython decoders in Phase 3+.
 # ---------------------------------------------------------------------------
 
-cdef inline void _find_best_wall(
+cdef void _find_best_wall(
     const i64[:, :, ::1] emss,  # (n_ems, 2, 3) — [ems_idx][min/max][x/y/z]
     i64 n_ems,
     i64 dx, i64 dy, i64 dz,
@@ -87,7 +84,7 @@ cdef inline void _find_best_wall(
     out_z[0] = bz
 
 
-cdef inline void _find_best_corner(
+cdef void _find_best_corner(
     const i64[:, :, ::1] emss,
     i64 n_ems,
     i64 dx, i64 dy, i64 dz,
@@ -125,7 +122,7 @@ cdef inline void _find_best_corner(
     out_z[0] = bz
 
 
-cdef inline void _find_best_in_slab(
+cdef void _find_best_in_slab(
     const i64[:, :, ::1] emss,
     i64 n_ems,
     i64 dx, i64 dy, i64 dz,

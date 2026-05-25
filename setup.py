@@ -90,9 +90,25 @@ EXTENSION_MODULES = [
         extra_compile_args=EXTRA_COMPILE_ARGS,
         extra_link_args=EXTRA_LINK_ARGS,
     ),
-    # Future port targets:
-    # Extension("pallet_packer._brkga_core.jit_decoders_geom_cy", ...),
-    # Extension("pallet_packer._brkga_core.jit_decoders_cstr_cy", ...),
+    # Phase 3a: brkga_v3_fast helpers (find_best_dftrc + commit_ems)
+    # ported to Cython so geom decoders can call them via cimport.
+    Extension(
+        name="pallet_packer._brkga_core.v3fast_cy",
+        sources=[str(SRC / "v3fast_cy.pyx")],
+        include_dirs=[np.get_include()],
+        extra_compile_args=EXTRA_COMPILE_ARGS,
+        extra_link_args=EXTRA_LINK_ARGS,
+    ),
+    # Phase 3a: geometric decoders (decode_njit_mode for modes 0/1/2).
+    # Calls Cython primitives + v3fast helpers via cdef nogil interface.
+    Extension(
+        name="pallet_packer._brkga_core.jit_decoders_geom_cy",
+        sources=[str(SRC / "jit_decoders_geom_cy.pyx")],
+        include_dirs=[np.get_include()],
+        extra_compile_args=EXTRA_COMPILE_ARGS,
+        extra_link_args=EXTRA_LINK_ARGS,
+    ),
+    # Future: Extension("pallet_packer._brkga_core.jit_decoders_cstr_cy", ...),
 ]
 
 
