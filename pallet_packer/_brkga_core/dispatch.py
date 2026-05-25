@@ -26,18 +26,25 @@ from ..brkga_v3_fast import precompute_box_dims
 from .precompute import _NO_LIMIT
 from .blocks import resolve_sku_blocks_from_chrom
 from .jit_decoders_geom import (
-    decode_layer_njit,
     decode_blocks_njit_mode,
     decode_precomputed_blocks_njit_mode,
 )
-# Prefer the Cython-compiled mode 0/1/2 decoder when the .so is present
+# Prefer the Cython-compiled geometric decoders when the .so is present
 # (built by `pip install -e .` inside the project Docker image). Falls back
 # to the Numba reference for environments without a build toolchain — same
 # signature, bit-identical results.
+#   Phase 3a — decode_njit_mode (modes 0/1/2)
+#   Phase 3b — decode_layer_njit (mode 3)
 try:
-    from .jit_decoders_geom_cy import decode_njit_mode  # noqa: F401
+    from .jit_decoders_geom_cy import (  # noqa: F401
+        decode_njit_mode,
+        decode_layer_njit,
+    )
 except ImportError:
-    from .jit_decoders_geom import decode_njit_mode  # noqa: F401
+    from .jit_decoders_geom import (  # noqa: F401
+        decode_njit_mode,
+        decode_layer_njit,
+    )
 from .jit_decoders_cstr import (
     decode_njit_mode_cstr,
     decode_blocks_njit_mode_cstr,
