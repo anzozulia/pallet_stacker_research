@@ -69,18 +69,23 @@ _NO_LIMIT = 1e18
 
 
 def precompute_constraint_arrays(boxes: List[Box], pallet: Pallet) -> tuple:
-    """Return (weights, max_load_on_top, pallet_max_weight, has_constraints).
+    """Return (weights, max_load_on_top, requires_full_support,
+                pallet_max_weight, has_constraints).
 
-    weights:           float64[n]   per-box weight (0 if none)
-    max_load_on_top:   float64[n]   per-box load capacity on top (_NO_LIMIT if
-                                    infinite or unset)
-    pallet_max_weight: float64      pallet weight cap (_NO_LIMIT if infinite)
-    has_constraints:   bool         True iff any constraint is finite — JIT
-                                    decoders short-circuit if False
+    weights:               float64[n]  per-box weight (0 if none)
+    max_load_on_top:       float64[n]  per-box load capacity on top
+                                       (_NO_LIMIT if infinite or unset)
+    requires_full_support: int64[n]    1 if box demands full support
+                                       (overrides config.support_ratio
+                                       with 1.0 for this box); 0 otherwise
+    pallet_max_weight:     float64     pallet weight cap (_NO_LIMIT if inf)
+    has_constraints:       bool        True iff any constraint is finite —
+                                       JIT decoders short-circuit if False
     """
     n = len(boxes)
     weights = np.zeros(n, dtype=np.float64)
     mlot = np.full(n, _NO_LIMIT, dtype=np.float64)
+    rfs = np.zeros(n, dtype=np.int64)
     has_constraints = False
     for i, b in enumerate(boxes):
         weights[i] = float(b.weight) if b.weight else 0.0
@@ -88,13 +93,47 @@ def precompute_constraint_arrays(boxes: List[Box], pallet: Pallet) -> tuple:
         if m is not None and not math.isinf(m):
             mlot[i] = float(m)
             has_constraints = True
+        if getattr(b, 'requires_full_support', False):
+            rfs[i] = 1
+            has_constraints = True
     pmw = getattr(pallet, 'max_weight', float('inf'))
     if pmw is None or math.isinf(pmw):
         pallet_max_weight = _NO_LIMIT
     else:
         pallet_max_weight = float(pmw)
         has_constraints = True
-    return weights, mlot, pallet_max_weight, has_constraints
+    return weights, mlot, rfs, pallet_max_weight, has_constraints
+
+
+def precompute_cog_envelope(pallet: Pallet, config: PackerConfig) -> tuple:
+    """Return (cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+                cog_min_load_frac, cog_active).
+
+    cog_active = True iff the envelope is finite (config.cog_envelope_fraction
+    < 1.0 OR the pallet supplies explicit cog_x_range / cog_y_range bounds).
+    When inactive, the JIT decoders skip the CoG check entirely.
+    """
+    L = float(pallet.length)
+    W = float(pallet.width)
+    frac = float(config.cog_envelope_fraction)
+    min_load_frac = float(config.cog_check_min_load_fraction)
+    # Resolve explicit ranges if given, else derive from envelope fraction.
+    if pallet.cog_x_range is not None:
+        cx_min, cx_max = float(pallet.cog_x_range[0]), float(pallet.cog_x_range[1])
+    else:
+        cx_min = L / 2.0 - frac * L
+        cx_max = L / 2.0 + frac * L
+    if pallet.cog_y_range is not None:
+        cy_min, cy_max = float(pallet.cog_y_range[0]), float(pallet.cog_y_range[1])
+    else:
+        cy_min = W / 2.0 - frac * W
+        cy_max = W / 2.0 + frac * W
+    # Active when the envelope actually bites (frac < 1.0 means restricted)
+    # or when explicit ranges narrower than the full pallet.
+    full_envelope = (
+        pallet.cog_x_range is None and pallet.cog_y_range is None and frac >= 1.0)
+    cog_active = not full_envelope
+    return cx_min, cx_max, cy_min, cy_max, min_load_frac, cog_active
 
 
 # ============================================================================
@@ -1112,18 +1151,30 @@ def _check_load_on_top_njit(
     cand_dx: int, cand_dy: int, cand_dz: int,
     cand_weight: float,
     support_ratio: float,
+    require_centroid: int = 0,
+    require_full_support: int = 0,
 ) -> bool:
     """Returns True if placing candidate would not violate any supporter's
-    max_load_on_top AND the placement's support fraction meets support_ratio.
+    max_load_on_top AND the placement's support is geometrically valid.
 
-    Distributes candidate weight across supporters in proportion to contact
-    area (mirrors v2 packer.py:_load_bearing_ok). When support_ratio > 0
-    and cand_z > 0, additionally requires total_contact_area / footprint
-    >= support_ratio (mirrors v2's full/partial-support check).
+    Geometric checks (when cand_z > 0):
+      - Total contact area / footprint >= effective_support_ratio
+        (= 1.0 if require_full_support else support_ratio)
+      - When require_centroid: footprint centroid (cand_x + cand_dx/2,
+        cand_y + cand_dy/2) must lie within at least one supporter's
+        XY footprint
+    Load check:
+      - Distributes candidate weight across supporters in proportion to
+        contact area; rejects if any supporter's running top-load + share
+        exceeds its mlot.
     """
     # Floor placement → no supporters needed.
     if cand_z <= 0:
         return True
+    # Centroid coordinates (integer * 2 to keep math exact).
+    cx2 = 2 * cand_x + cand_dx
+    cy2 = 2 * cand_y + cand_dy
+    centroid_supported = 0
     # Pass 1: total contact area across supporters on this pallet.
     total_area = 0.0
     for i in range(n_placed):
@@ -1150,15 +1201,24 @@ def _check_load_on_top_njit(
         if y_hi <= y_lo:
             continue
         total_area += float((x_hi - x_lo) * (y_hi - y_lo))
+        # Centroid check on this supporter: cx2/2 in [sup_x, sup_x+sup_dx]?
+        if centroid_supported == 0 and require_centroid != 0:
+            if (cx2 >= 2 * sup_x and cx2 <= 2 * (sup_x + sup_dx)
+                    and cy2 >= 2 * sup_y and cy2 <= 2 * (sup_y + sup_dy)):
+                centroid_supported = 1
     if total_area <= 0.0:
         # No supporters but z > 0 — would be floating; reject defensively.
         # (EMS-based decoder shouldn't produce this, but be safe.)
         return False
     # Support-ratio check: fraction of footprint resting on supporters.
-    if support_ratio > 0.0:
+    eff_sr = 1.0 if require_full_support != 0 else support_ratio
+    if eff_sr > 0.0:
         footprint = float(cand_dx * cand_dy)
-        if footprint > 0 and total_area / footprint < support_ratio - 1e-6:
+        if footprint > 0 and total_area / footprint < eff_sr - 1e-6:
             return False
+    # Centroid-supported check (only when required).
+    if require_centroid != 0 and centroid_supported == 0:
+        return False
     # Pass 2: each supporter's accumulated top-load must not exceed its mlot.
     for i in range(n_placed):
         if placements_out[i, 5] == 0:
@@ -1188,6 +1248,63 @@ def _check_load_on_top_njit(
         if placement_top_loads[i] + share > mlot[sup_box] + 1e-6:
             return False
     return True
+
+
+@njit(cache=True, fastmath=True)
+def _check_cog_envelope_njit(
+    cand_x: int, cand_y: int,
+    cand_dx: int, cand_dy: int,
+    cand_weight: float,
+    cand_pallet: int,
+    pallet_weights: np.ndarray,
+    pallet_sum_xw: np.ndarray,
+    pallet_sum_yw: np.ndarray,
+    pallet_max_weight: float,
+    cog_x_min: float, cog_x_max: float,
+    cog_y_min: float, cog_y_max: float,
+    cog_min_load_frac: float,
+) -> bool:
+    """Returns True if adding candidate keeps the pallet CoG inside the
+    envelope after placement. Mirrors v2 packer.py:_cog_ok.
+
+    The check only kicks in once the pallet is at least
+    cog_min_load_frac of pallet_max_weight (avoids rejecting early
+    placements that haven't accumulated enough weight to balance).
+    """
+    new_total = pallet_weights[cand_pallet] + cand_weight
+    if new_total <= 0.0:
+        return True
+    # Skip check while pallet is lightly loaded.
+    if pallet_max_weight < _NO_LIMIT:
+        if new_total < cog_min_load_frac * pallet_max_weight:
+            return True
+    cand_cx = float(cand_x) + 0.5 * float(cand_dx)
+    cand_cy = float(cand_y) + 0.5 * float(cand_dy)
+    new_sum_xw = pallet_sum_xw[cand_pallet] + cand_weight * cand_cx
+    new_sum_yw = pallet_sum_yw[cand_pallet] + cand_weight * cand_cy
+    cx = new_sum_xw / new_total
+    cy = new_sum_yw / new_total
+    if cx < cog_x_min - 1e-6 or cx > cog_x_max + 1e-6:
+        return False
+    if cy < cog_y_min - 1e-6 or cy > cog_y_max + 1e-6:
+        return False
+    return True
+
+
+@njit(cache=True, fastmath=True)
+def _apply_cog_contribution_njit(
+    cand_x: int, cand_y: int,
+    cand_dx: int, cand_dy: int,
+    cand_weight: float,
+    cand_pallet: int,
+    pallet_sum_xw: np.ndarray,
+    pallet_sum_yw: np.ndarray,
+) -> None:
+    """Update per-pallet weighted-position sums after committing a placement."""
+    if cand_weight <= 0.0:
+        return
+    pallet_sum_xw[cand_pallet] += cand_weight * (float(cand_x) + 0.5 * float(cand_dx))
+    pallet_sum_yw[cand_pallet] += cand_weight * (float(cand_y) + 0.5 * float(cand_dy))
 
 
 @njit(cache=True, fastmath=True)
@@ -1272,15 +1389,21 @@ def decode_njit_mode_cstr(
     mode: int,  # 0=DFTRC, 1=wall, 2=corner
     weights: np.ndarray,
     mlot: np.ndarray,
+    rfs: np.ndarray,
     pallet_max_weight: float,
     support_ratio: float,
+    require_centroid: int,
+    cog_x_min: float, cog_x_max: float,
+    cog_y_min: float, cog_y_max: float,
+    cog_min_load_frac: float,
+    cog_active: int,
 ) -> int:
-    """Constraint-aware variant of decode_njit_mode.
+    """Constraint-aware variant of decode_njit_mode (v3.10/v3.12).
 
-    Enforces Pallet.max_weight and Box.max_load_on_top. Per bin: candidate
-    rejected if it would bust the pallet weight cap, or if it would cause
-    any supporter's max_load_on_top to be exceeded. Rejected → try next bin.
-    Otherwise functionally identical to decode_njit_mode.
+    Enforces (v3.10): Pallet.max_weight, Box.max_load_on_top, support_ratio.
+    Enforces (v3.12): per-box requires_full_support, centroid-supported,
+    pallet CoG envelope. Caller passes L, W as L_eff, W_eff already inflated
+    by max_overhang when applicable. Rejected candidate → try next bin.
     """
     n = bps_order.shape[0]
     MAX_BINS = max_pallets if max_pallets > 0 else 32
@@ -1290,6 +1413,8 @@ def decode_njit_mode_cstr(
     scratch = np.zeros((MAX_EMS, 2, 3), dtype=np.int64)
     pallet_weights = np.zeros(MAX_BINS, dtype=np.float64)
     placement_top_loads = np.zeros(n, dtype=np.float64)
+    pallet_sum_xw = np.zeros(MAX_BINS, dtype=np.float64)
+    pallet_sum_yw = np.zeros(MAX_BINS, dtype=np.float64)
 
     for i in range(n):
         box_idx = bps_order[i]
@@ -1353,13 +1478,24 @@ def decode_njit_mode_cstr(
             dx = dims_all[box_idx, bin_best_rot, 0]
             dy = dims_all[box_idx, bin_best_rot, 1]
             dz = dims_all[box_idx, bin_best_rot, 2]
-            # Load-on-top + support-ratio check
+            # Load-on-top + support-ratio + centroid + per-box rfs check
             if not _check_load_on_top_njit(
                     placements_out, dims_all, bps_order, mlot,
                     placement_top_loads, n,
                     b, bin_best_x, bin_best_y, bin_best_z,
-                    dx, dy, dz, cand_weight, support_ratio):
+                    dx, dy, dz, cand_weight, support_ratio,
+                    require_centroid, rfs[box_idx]):
                 continue  # try next bin
+            # CoG envelope check (only when active).
+            if cog_active != 0:
+                if not _check_cog_envelope_njit(
+                        bin_best_x, bin_best_y, dx, dy,
+                        cand_weight, b,
+                        pallet_weights, pallet_sum_xw, pallet_sum_yw,
+                        pallet_max_weight,
+                        cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+                        cog_min_load_frac):
+                    continue
             # Commit
             new_count = commit_ems_njit(
                 bin_emss[b], bin_ems_count[b],
@@ -1387,6 +1523,9 @@ def decode_njit_mode_cstr(
                 placement_top_loads, n,
                 b, bin_best_x, bin_best_y, bin_best_z,
                 dx, dy, dz, cand_weight)
+            _apply_cog_contribution_njit(
+                bin_best_x, bin_best_y, dx, dy,
+                cand_weight, b, pallet_sum_xw, pallet_sum_yw)
             placed = True
             break
 
@@ -1482,6 +1621,9 @@ def decode_njit_mode_cstr(
             placements_out[i, 5] = 1
             pallet_weights[n_bins] += cand_weight
             # First box at z=0; no top-load update needed.
+            _apply_cog_contribution_njit(
+                best_x_n, best_y_n, dx, dy,
+                cand_weight, n_bins, pallet_sum_xw, pallet_sum_yw)
             n_bins += 1
     return n_bins
 
@@ -1605,16 +1747,23 @@ def decode_blocks_njit_mode_cstr(
     n_skus: int,
     weights: np.ndarray,
     mlot: np.ndarray,
+    rfs: np.ndarray,
     pallet_max_weight: float,
     support_ratio: float,
+    require_centroid: int,
+    cog_x_min: float, cog_x_max: float,
+    cog_y_min: float, cog_y_max: float,
+    cog_min_load_frac: float,
+    cog_active: int,
 ) -> int:
-    """Constraint-aware dynamic-block decoder (mode 4 + v3.11 constraints).
+    """Constraint-aware dynamic-block decoder (mode 4 + v3.11/v3.12).
 
     Like decode_blocks_njit_mode but enforces Pallet.max_weight,
     Box.max_load_on_top (both internal-block stack height AND external
-    supporter loads), and support_ratio. When a candidate block doesn't
-    satisfy constraints, falls back to a single-box (1,1,1) placement at
-    the same DFTRC position; if even that fails, tries the next bin.
+    supporter loads), support_ratio, per-box requires_full_support,
+    centroid-supported, and pallet CoG envelope (v3.12). When a candidate
+    block doesn't satisfy constraints, falls back to (1, 1, 1) at the
+    same DFTRC position; if that fails, tries the next bin.
     """
     n = bps_order.shape[0]
     MAX_BINS = max_pallets if max_pallets > 0 else 32
@@ -1625,6 +1774,8 @@ def decode_blocks_njit_mode_cstr(
     placed = np.zeros(n, dtype=np.int64)
     pallet_weights = np.zeros(MAX_BINS, dtype=np.float64)
     placement_top_loads = np.zeros(n, dtype=np.float64)
+    pallet_sum_xw = np.zeros(MAX_BINS, dtype=np.float64)
+    pallet_sum_yw = np.zeros(MAX_BINS, dtype=np.float64)
 
     sku_remaining = np.zeros(n_skus, dtype=np.int64)
     for i in range(n):
@@ -1696,7 +1847,8 @@ def decode_blocks_njit_mode_cstr(
                     placements_out, dims_all, bps_order, mlot,
                     placement_top_loads, n,
                     b, best_x, best_y, best_z,
-                    k * dx, l * dy, dz, bottom_w, support_ratio):
+                    k * dx, l * dy, dz, bottom_w, support_ratio,
+                    require_centroid, rfs[box_idx]):
                 # Try shrinking block (l, k → 1) before giving up on bin.
                 k, l = 1, 1
                 if k * l * m < 1:
@@ -1706,8 +1858,21 @@ def decode_blocks_njit_mode_cstr(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, best_x, best_y, best_z,
-                        dx, dy, dz, bottom_w, support_ratio):
+                        dx, dy, dz, bottom_w, support_ratio,
+                        require_centroid, rfs[box_idx]):
                     continue  # next bin
+            # Phase 2d: CoG envelope check (block treated as point mass at
+            # the bottom-layer footprint centroid; total weight = k*l*m*w).
+            if cog_active != 0:
+                block_total_w = float(k * l * m) * box_weight
+                if not _check_cog_envelope_njit(
+                        best_x, best_y, k * dx, l * dy,
+                        block_total_w, b,
+                        pallet_weights, pallet_sum_xw, pallet_sum_yw,
+                        pallet_max_weight,
+                        cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+                        cog_min_load_frac):
+                    continue
             # Phase 3: commit block.
             placed_so_far = _commit_block_placements_njit(
                 placements_out, placed, bps_order, sku_id_per_box,
@@ -1740,6 +1905,43 @@ def decode_blocks_njit_mode_cstr(
                         b, placements_out[jj, 2], placements_out[jj, 3],
                         best_z, dx, dy, dz, box_weight)
                     applied += 1
+            # Update CoG with each box in the block as a separate point mass
+            # (using its actual position rather than collapsing to bottom-layer
+            # centroid — keeps CoG tracking precise for the upper layers too).
+            if box_weight > 0:
+                kk2 = 0
+                ll2 = 0
+                mm2 = 0
+                blk_count = k * l * m
+                applied2 = 0
+                for jj in range(i, n):
+                    if applied2 >= blk_count:
+                        break
+                    if placed[jj] != 1:
+                        continue
+                    if placements_out[jj, 0] != b:
+                        continue
+                    if sku_id_per_box[bps_order[jj]] != my_sku:
+                        continue
+                    # Confirm this is one of the just-committed block boxes.
+                    px = best_x + kk2 * dx
+                    py = best_y + ll2 * dy
+                    pz = best_z + mm2 * dz
+                    if (placements_out[jj, 2] != px
+                            or placements_out[jj, 3] != py
+                            or placements_out[jj, 4] != pz):
+                        continue
+                    _apply_cog_contribution_njit(
+                        px, py, dx, dy, box_weight, b,
+                        pallet_sum_xw, pallet_sum_yw)
+                    applied2 += 1
+                    kk2 += 1
+                    if kk2 >= k:
+                        kk2 = 0
+                        ll2 += 1
+                        if ll2 >= l:
+                            ll2 = 0
+                            mm2 += 1
             # Single EMS commit for the entire block region.
             new_count = commit_ems_njit(
                 bin_emss[b], bin_ems_count[b],
@@ -1823,6 +2025,40 @@ def decode_blocks_njit_mode_cstr(
             dx, dy, dz, k, l, m, my_sku, box_weight, n_bins)
         sku_remaining[my_sku] -= placed_so_far
         pallet_weights[n_bins] += float(placed_so_far) * box_weight
+        # CoG contribution for each box in the new-bin block.
+        if box_weight > 0:
+            kk2 = 0
+            ll2 = 0
+            mm2 = 0
+            blk_count = k * l * m
+            applied2 = 0
+            for jj in range(i, n):
+                if applied2 >= blk_count:
+                    break
+                if placed[jj] != 1:
+                    continue
+                if placements_out[jj, 0] != n_bins:
+                    continue
+                if sku_id_per_box[bps_order[jj]] != my_sku:
+                    continue
+                px = best_x_n + kk2 * dx
+                py = best_y_n + ll2 * dy
+                pz = best_z_n + mm2 * dz
+                if (placements_out[jj, 2] != px
+                        or placements_out[jj, 3] != py
+                        or placements_out[jj, 4] != pz):
+                    continue
+                _apply_cog_contribution_njit(
+                    px, py, dx, dy, box_weight, n_bins,
+                    pallet_sum_xw, pallet_sum_yw)
+                applied2 += 1
+                kk2 += 1
+                if kk2 >= k:
+                    kk2 = 0
+                    ll2 += 1
+                    if ll2 >= l:
+                        ll2 = 0
+                        mm2 += 1
         new_count = commit_ems_njit(
             bin_emss[n_bins], bin_ems_count[n_bins],
             best_x_n, best_y_n, best_z_n,
@@ -1856,10 +2092,16 @@ def decode_layer_njit_cstr(
     placements_out: np.ndarray,
     weights: np.ndarray,
     mlot: np.ndarray,
+    rfs: np.ndarray,
     pallet_max_weight: float,
     support_ratio: float,
+    require_centroid: int,
+    cog_x_min: float, cog_x_max: float,
+    cog_y_min: float, cog_y_max: float,
+    cog_min_load_frac: float,
+    cog_active: int,
 ) -> int:
-    """Constraint-aware Bischoff-Ratcliff layer-build (mode 3 + v3.11).
+    """Constraint-aware Bischoff-Ratcliff layer-build (mode 3 + v3.11/v3.12).
 
     Same slab structure as decode_layer_njit but per-placement checks:
       - Pallet weight cap
@@ -1876,6 +2118,8 @@ def decode_layer_njit_cstr(
     scratch = np.zeros((MAX_EMS, 2, 3), dtype=np.int64)
     pallet_weights = np.zeros(MAX_BINS, dtype=np.float64)
     placement_top_loads = np.zeros(n, dtype=np.float64)
+    pallet_sum_xw = np.zeros(MAX_BINS, dtype=np.float64)
+    pallet_sum_yw = np.zeros(MAX_BINS, dtype=np.float64)
 
     for i in range(n):
         box_idx = bps_order[i]
@@ -1911,11 +2155,21 @@ def decode_layer_njit_cstr(
                 dx = dims_all[box_idx, bin_best_rot, 0]
                 dy = dims_all[box_idx, bin_best_rot, 1]
                 dz = dims_all[box_idx, bin_best_rot, 2]
-                if _check_load_on_top_njit(
+                cog_ok = True
+                if cog_active != 0:
+                    cog_ok = _check_cog_envelope_njit(
+                        bin_best_x, bin_best_y, dx, dy,
+                        cand_weight, b,
+                        pallet_weights, pallet_sum_xw, pallet_sum_yw,
+                        pallet_max_weight,
+                        cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+                        cog_min_load_frac)
+                if cog_ok and _check_load_on_top_njit(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, bin_best_x, bin_best_y, bin_best_z,
-                        dx, dy, dz, cand_weight, support_ratio):
+                        dx, dy, dz, cand_weight, support_ratio,
+                        require_centroid, rfs[box_idx]):
                     new_count = commit_ems_njit(
                         bin_emss[b], bin_ems_count[b],
                         bin_best_x, bin_best_y, bin_best_z,
@@ -1942,6 +2196,9 @@ def decode_layer_njit_cstr(
                         placement_top_loads, n,
                         b, bin_best_x, bin_best_y, bin_best_z,
                         dx, dy, dz, cand_weight)
+                    _apply_cog_contribution_njit(
+                        bin_best_x, bin_best_y, dx, dy,
+                        cand_weight, b, pallet_sum_xw, pallet_sum_yw)
                     placed = True
                     break
 
@@ -1979,11 +2236,21 @@ def decode_layer_njit_cstr(
                 dx = dims_all[box_idx, r, 0]
                 dy = dims_all[box_idx, r, 1]
                 dz = dims_all[box_idx, r, 2]
-                if _check_load_on_top_njit(
+                cog_ok = True
+                if cog_active != 0:
+                    cog_ok = _check_cog_envelope_njit(
+                        new_slab_start, new_best_y, dx, dy,
+                        cand_weight, b,
+                        pallet_weights, pallet_sum_xw, pallet_sum_yw,
+                        pallet_max_weight,
+                        cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+                        cog_min_load_frac)
+                if cog_ok and _check_load_on_top_njit(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, new_slab_start, new_best_y, new_best_z,
-                        dx, dy, dz, cand_weight, support_ratio):
+                        dx, dy, dz, cand_weight, support_ratio,
+                        require_centroid, rfs[box_idx]):
                     new_count = commit_ems_njit(
                         bin_emss[b], bin_ems_count[b],
                         new_slab_start, new_best_y, new_best_z,
@@ -2012,6 +2279,9 @@ def decode_layer_njit_cstr(
                         placement_top_loads, n,
                         b, new_slab_start, new_best_y, new_best_z,
                         dx, dy, dz, cand_weight)
+                    _apply_cog_contribution_njit(
+                        new_slab_start, new_best_y, dx, dy,
+                        cand_weight, b, pallet_sum_xw, pallet_sum_yw)
                     placed = True
                     break
 
@@ -2076,6 +2346,9 @@ def decode_layer_njit_cstr(
         bin_slab_max_x[n_bins] = dx
         pallet_weights[n_bins] += cand_weight
         # First box at z=0 — no top-load update needed.
+        _apply_cog_contribution_njit(
+            0, seed_y, dx, dy, cand_weight, n_bins,
+            pallet_sum_xw, pallet_sum_yw)
         n_bins += 1
 
     return n_bins
@@ -2113,20 +2386,26 @@ def warmup_jit() -> None:
     sku_best = np.array([[2, 1, 1, 0]], dtype=np.int64)
     _ = decode_precomputed_blocks_njit_mode(
         bps, n_rots, dims, sku_ids, sku_best, 100, 100, 100, 1, placements, 1)
-    # Constraint-aware variant (v3.10/v3.11)
+    # Constraint-aware variant (v3.10/v3.11/v3.12)
     weights = np.zeros(n, dtype=np.float64)
     mlot = np.full(n, 1e18, dtype=np.float64)
+    rfs_arr = np.zeros(n, dtype=np.int64)
     placements_cstr = np.zeros((n, 6), dtype=np.int64)
+    # cog scalars: any large range with cog_active=0 → check skipped
+    _CMIN, _CMAX = -1e18, 1e18
     for mode in (0, 1, 2):
         _ = decode_njit_mode_cstr(
             bps, n_rots, dims, 100, 100, 100, 1, placements_cstr, mode,
-            weights, mlot, 1e18, 0.0)
+            weights, mlot, rfs_arr, 1e18, 0.0,
+            0, _CMIN, _CMAX, _CMIN, _CMAX, 0.0, 0)
     _ = decode_blocks_njit_mode_cstr(
         bps, n_rots, dims, sku_ids, 100, 100, 100, 1, placements_cstr, 1,
-        weights, mlot, 1e18, 0.0)
+        weights, mlot, rfs_arr, 1e18, 0.0,
+        0, _CMIN, _CMAX, _CMIN, _CMAX, 0.0, 0)
     _ = decode_layer_njit_cstr(
         bps, n_rots, dims, 100, 100, 100, 1, placements_cstr,
-        weights, mlot, 1e18, 0.0)
+        weights, mlot, rfs_arr, 1e18, 0.0,
+        0, _CMIN, _CMAX, _CMIN, _CMAX, 0.0, 0)
     _JIT_WARMED = True
 
 
@@ -2142,16 +2421,23 @@ def decode_chromosome(
     sku_id_per_box: Optional[np.ndarray] = None,
     sku_best_block: Optional[np.ndarray] = None,
     sku_top_k_blocks: Optional[np.ndarray] = None,
-    # v3.10 constraint-aware path. When weights is None, the geometric-only
-    # decoder runs (BR / academic). When weights + mlot + pmw are provided
-    # and any constraint is finite, modes 0/1/2 use decode_njit_mode_cstr;
-    # modes 3/4/5 fall back to mode 0 constraint-aware (block/layer modes
-    # don't yet have constraint-aware variants).
+    # v3.10/v3.12 constraint-aware path. When weights is None, the
+    # geometric-only decoder runs (BR / academic). When weights + mlot +
+    # rfs + pmw are provided and any constraint is finite, modes 0/1/2 use
+    # decode_njit_mode_cstr; modes 3/4/5 use their own cstr variants.
     weights: Optional[np.ndarray] = None,
     mlot: Optional[np.ndarray] = None,
+    rfs: Optional[np.ndarray] = None,
     pallet_max_weight: float = _NO_LIMIT,
     has_constraints: bool = False,
     support_ratio: float = 0.0,
+    # v3.12 additions:
+    require_centroid: int = 0,
+    cog_x_min: float = -1e18, cog_x_max: float = 1e18,
+    cog_y_min: float = -1e18, cog_y_max: float = 1e18,
+    cog_min_load_frac: float = 0.0,
+    cog_active: int = 0,
+    max_overhang: float = 0.0,
 ) -> PackResult:
     """Decode chromosome with chosen mode.
 
@@ -2179,23 +2465,31 @@ def decode_chromosome(
     L = int(round(pallet.length))
     W = int(round(pallet.width))
     H = int(round(pallet.height))
+    # Effective container dims include positive-side overhang (matches v2:
+    # boxes can overhang the +x / +y pallet edges but not the -x / -y).
+    L_eff = L + int(round(max_overhang)) if max_overhang > 0 else L
+    W_eff = W + int(round(max_overhang)) if max_overhang > 0 else W
 
     placements_out = np.zeros((n, 6), dtype=np.int64)
-    # Constraint-aware dispatch (v3.11): every mode has a constraint-aware
-    # variant when has_constraints=True. Mode 5 delegates to mode 4 cstr
-    # because the precomputed top-K block selection has no value under
+    # Constraint-aware dispatch (v3.11/v3.12): every mode has a constraint-
+    # aware variant when has_constraints=True. Mode 5 delegates to mode 4
+    # cstr because the precomputed top-K block selection has no value under
     # constraints (top-K was pre-enumerated assuming no weight/load limits).
-    cstr_active = (has_constraints and weights is not None and mlot is not None)
+    cstr_active = (has_constraints and weights is not None
+                   and mlot is not None and rfs is not None)
     if mode == 3:
         if cstr_active:
             n_bins = decode_layer_njit_cstr(
-                order, n_rots_arr, dims_all, L, W, H,
+                order, n_rots_arr, dims_all, L_eff, W_eff, H,
                 max_pallets, placements_out,
-                weights, mlot, pallet_max_weight, support_ratio,
+                weights, mlot, rfs, pallet_max_weight, support_ratio,
+                require_centroid,
+                cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+                cog_min_load_frac, cog_active,
             )
         else:
             n_bins = decode_layer_njit(
-                order, n_rots_arr, dims_all, L, W, H,
+                order, n_rots_arr, dims_all, L_eff, W_eff, H,
                 max_pallets, placements_out,
             )
     elif mode == 4:
@@ -2203,13 +2497,16 @@ def decode_chromosome(
             # Without SKU info, fall back to mode 0 (or its cstr variant).
             if cstr_active:
                 n_bins = decode_njit_mode_cstr(
-                    order, n_rots_arr, dims_all, L, W, H,
+                    order, n_rots_arr, dims_all, L_eff, W_eff, H,
                     max_pallets, placements_out, 0,
-                    weights, mlot, pallet_max_weight, support_ratio,
+                    weights, mlot, rfs, pallet_max_weight, support_ratio,
+                    require_centroid,
+                    cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+                    cog_min_load_frac, cog_active,
                 )
             else:
                 n_bins = decode_njit_mode(
-                    order, n_rots_arr, dims_all, L, W, H,
+                    order, n_rots_arr, dims_all, L_eff, W_eff, H,
                     max_pallets, placements_out, 0,
                 )
         else:
@@ -2217,26 +2514,32 @@ def decode_chromosome(
             if cstr_active:
                 n_bins = decode_blocks_njit_mode_cstr(
                     order, n_rots_arr, dims_all, sku_id_per_box,
-                    L, W, H, max_pallets, placements_out, n_skus,
-                    weights, mlot, pallet_max_weight, support_ratio,
+                    L_eff, W_eff, H, max_pallets, placements_out, n_skus,
+                    weights, mlot, rfs, pallet_max_weight, support_ratio,
+                    require_centroid,
+                    cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+                    cog_min_load_frac, cog_active,
                 )
             else:
                 n_bins = decode_blocks_njit_mode(
                     order, n_rots_arr, dims_all, sku_id_per_box,
-                    L, W, H, max_pallets, placements_out, n_skus,
+                    L_eff, W_eff, H, max_pallets, placements_out, n_skus,
                 )
     elif mode == 5:
         if sku_id_per_box is None:
             # Without SKU info, fall back to mode 0 (or its cstr variant).
             if cstr_active:
                 n_bins = decode_njit_mode_cstr(
-                    order, n_rots_arr, dims_all, L, W, H,
+                    order, n_rots_arr, dims_all, L_eff, W_eff, H,
                     max_pallets, placements_out, 0,
-                    weights, mlot, pallet_max_weight, support_ratio,
+                    weights, mlot, rfs, pallet_max_weight, support_ratio,
+                    require_centroid,
+                    cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+                    cog_min_load_frac, cog_active,
                 )
             else:
                 n_bins = decode_njit_mode(
-                    order, n_rots_arr, dims_all, L, W, H,
+                    order, n_rots_arr, dims_all, L_eff, W_eff, H,
                     max_pallets, placements_out, 0,
                 )
         elif cstr_active:
@@ -2248,13 +2551,16 @@ def decode_chromosome(
             n_skus = int(sku_id_per_box.max()) + 1
             n_bins = decode_blocks_njit_mode_cstr(
                 order, n_rots_arr, dims_all, sku_id_per_box,
-                L, W, H, max_pallets, placements_out, n_skus,
-                weights, mlot, pallet_max_weight, support_ratio,
+                L_eff, W_eff, H, max_pallets, placements_out, n_skus,
+                weights, mlot, rfs, pallet_max_weight, support_ratio,
+                require_centroid,
+                cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+                cog_min_load_frac, cog_active,
             )
         else:
             n_skus = int(sku_id_per_box.max()) + 1
-            # Resolve per-SKU block: prefer top-K via chromosome, else
-            # fixed top-1 (sku_best_block), else fall back to mode 4
+            # Geometric-only path (no constraints): no overhang either,
+            # so use L, W directly.
             if sku_top_k_blocks is not None:
                 chosen = resolve_sku_blocks_from_chrom(
                     chrom, n, n_skus, sku_top_k_blocks)
@@ -2277,13 +2583,16 @@ def decode_chromosome(
         # Modes 0/1/2: geometric or constraint-aware.
         if cstr_active:
             n_bins = decode_njit_mode_cstr(
-                order, n_rots_arr, dims_all, L, W, H,
+                order, n_rots_arr, dims_all, L_eff, W_eff, H,
                 max_pallets, placements_out, mode,
-                weights, mlot, pallet_max_weight, support_ratio,
+                weights, mlot, rfs, pallet_max_weight, support_ratio,
+                require_centroid,
+                cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+                cog_min_load_frac, cog_active,
             )
         else:
             n_bins = decode_njit_mode(
-                order, n_rots_arr, dims_all, L, W, H,
+                order, n_rots_arr, dims_all, L_eff, W_eff, H,
                 max_pallets, placements_out, mode,
             )
 
@@ -2339,9 +2648,16 @@ def decode_auto_mode(
     mode_cdf: Optional[np.ndarray] = None,
     weights: Optional[np.ndarray] = None,
     mlot: Optional[np.ndarray] = None,
+    rfs: Optional[np.ndarray] = None,
     pallet_max_weight: float = _NO_LIMIT,
     has_constraints: bool = False,
     support_ratio: float = 0.0,
+    require_centroid: int = 0,
+    cog_x_min: float = -1e18, cog_x_max: float = 1e18,
+    cog_y_min: float = -1e18, cog_y_max: float = 1e18,
+    cog_min_load_frac: float = 0.0,
+    cog_active: int = 0,
+    max_overhang: float = 0.0,
 ) -> PackResult:
     """Use last key in chromosome to pick decoder mode (0..n_modes-1).
     Mode 5 (if n_modes >= 6) uses pre-computed top-K blocks per SKU.
@@ -2350,8 +2666,11 @@ def decode_auto_mode(
     inverse-CDF so modes with higher weight get more chromosome share —
     the adaptive mode selector (v3.9).
 
-    If has_constraints=True, the constraint-aware decode path runs (v3.10).
-    support_ratio > 0 additionally enforces partial-support fraction.
+    If has_constraints=True, the constraint-aware decode path runs (v3.10
+    + v3.11 + v3.12). support_ratio > 0 enforces partial-support fraction;
+    require_centroid + per-box rfs add the v3.12 stability checks; the
+    cog_* params add the v3.12 CoG envelope; max_overhang enlarges the
+    effective pallet by allowing positive-edge overhang.
     """
     n = len(boxes)
     if len(chrom) >= 2 * n + 1:
@@ -2367,7 +2686,14 @@ def decode_auto_mode(
                              weights=weights, mlot=mlot,
                              pallet_max_weight=pallet_max_weight,
                              has_constraints=has_constraints,
-                             support_ratio=support_ratio)
+                             support_ratio=support_ratio,
+                             rfs=rfs,
+                             require_centroid=require_centroid,
+                             cog_x_min=cog_x_min, cog_x_max=cog_x_max,
+                             cog_y_min=cog_y_min, cog_y_max=cog_y_max,
+                             cog_min_load_frac=cog_min_load_frac,
+                             cog_active=cog_active,
+                             max_overhang=max_overhang)
 
 
 # ============================================================================
@@ -2614,6 +2940,13 @@ def local_search_2opt(
     pallet_max_weight: float = _NO_LIMIT,
     has_constraints: bool = False,
     support_ratio: float = 0.0,
+    rfs: Optional[np.ndarray] = None,
+    require_centroid: int = 0,
+    cog_x_min: float = -1e18, cog_x_max: float = 1e18,
+    cog_y_min: float = -1e18, cog_y_max: float = 1e18,
+    cog_min_load_frac: float = 0.0,
+    cog_active: int = 0,
+    max_overhang: float = 0.0,
     max_pallets: int = 1,
     seed: int = 99,
     verbose: bool = False,
@@ -2645,14 +2978,28 @@ def local_search_2opt(
             weights=weights, mlot=mlot,
             pallet_max_weight=pallet_max_weight,
             has_constraints=has_constraints,
-            support_ratio=support_ratio)
+            support_ratio=support_ratio,
+            rfs=rfs,
+            require_centroid=require_centroid,
+            cog_x_min=cog_x_min, cog_x_max=cog_x_max,
+            cog_y_min=cog_y_min, cog_y_max=cog_y_max,
+            cog_min_load_frac=cog_min_load_frac,
+            cog_active=cog_active,
+            max_overhang=max_overhang)
     else:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
             c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets,
             weights=weights, mlot=mlot,
             pallet_max_weight=pallet_max_weight,
             has_constraints=has_constraints,
-            support_ratio=support_ratio)
+            support_ratio=support_ratio,
+            rfs=rfs,
+            require_centroid=require_centroid,
+            cog_x_min=cog_x_min, cog_x_max=cog_x_max,
+            cog_y_min=cog_y_min, cog_y_max=cog_y_max,
+            cog_min_load_frac=cog_min_load_frac,
+            cog_active=cog_active,
+            max_overhang=max_overhang)
     res = decoder(current, boxes, pallet, config, n_rots_arr, dims_all,
                   max_pallets=max_pallets)
     best_fit = _fitness_pallet1(res, pallet)
@@ -2750,6 +3097,13 @@ def path_relinking(
     pallet_max_weight: float = _NO_LIMIT,
     has_constraints: bool = False,
     support_ratio: float = 0.0,
+    rfs: Optional[np.ndarray] = None,
+    require_centroid: int = 0,
+    cog_x_min: float = -1e18, cog_x_max: float = 1e18,
+    cog_y_min: float = -1e18, cog_y_max: float = 1e18,
+    cog_min_load_frac: float = 0.0,
+    cog_active: int = 0,
+    max_overhang: float = 0.0,
     max_pallets: int = 1,
     max_evals: int = 100,
     verbose: bool = False,
@@ -2770,14 +3124,28 @@ def path_relinking(
             weights=weights, mlot=mlot,
             pallet_max_weight=pallet_max_weight,
             has_constraints=has_constraints,
-            support_ratio=support_ratio)
+            support_ratio=support_ratio,
+            rfs=rfs,
+            require_centroid=require_centroid,
+            cog_x_min=cog_x_min, cog_x_max=cog_x_max,
+            cog_y_min=cog_y_min, cog_y_max=cog_y_max,
+            cog_min_load_frac=cog_min_load_frac,
+            cog_active=cog_active,
+            max_overhang=max_overhang)
     else:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
             c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets,
             weights=weights, mlot=mlot,
             pallet_max_weight=pallet_max_weight,
             has_constraints=has_constraints,
-            support_ratio=support_ratio)
+            support_ratio=support_ratio,
+            rfs=rfs,
+            require_centroid=require_centroid,
+            cog_x_min=cog_x_min, cog_x_max=cog_x_max,
+            cog_y_min=cog_y_min, cog_y_max=cog_y_max,
+            cog_min_load_frac=cog_min_load_frac,
+            cog_active=cog_active,
+            max_overhang=max_overhang)
     n = len(boxes)
     res_a = decoder(chrom_a, boxes, pallet, config, n_rots_arr, dims_all,
                     max_pallets=max_pallets)
@@ -2831,6 +3199,13 @@ def lns_polish(
     pallet_max_weight: float = _NO_LIMIT,
     has_constraints: bool = False,
     support_ratio: float = 0.0,
+    rfs: Optional[np.ndarray] = None,
+    require_centroid: int = 0,
+    cog_x_min: float = -1e18, cog_x_max: float = 1e18,
+    cog_y_min: float = -1e18, cog_y_max: float = 1e18,
+    cog_min_load_frac: float = 0.0,
+    cog_active: int = 0,
+    max_overhang: float = 0.0,
     max_pallets: int = 1,
     time_budget_s: float = 3.0,
     seed: int = 77,
@@ -2860,14 +3235,28 @@ def lns_polish(
             weights=weights, mlot=mlot,
             pallet_max_weight=pallet_max_weight,
             has_constraints=has_constraints,
-            support_ratio=support_ratio)
+            support_ratio=support_ratio,
+            rfs=rfs,
+            require_centroid=require_centroid,
+            cog_x_min=cog_x_min, cog_x_max=cog_x_max,
+            cog_y_min=cog_y_min, cog_y_max=cog_y_max,
+            cog_min_load_frac=cog_min_load_frac,
+            cog_active=cog_active,
+            max_overhang=max_overhang)
     else:
         decoder = lambda c, b, p, cfg, na, da, max_pallets=1: decode_chromosome(
             c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets,
             weights=weights, mlot=mlot,
             pallet_max_weight=pallet_max_weight,
             has_constraints=has_constraints,
-            support_ratio=support_ratio)
+            support_ratio=support_ratio,
+            rfs=rfs,
+            require_centroid=require_centroid,
+            cog_x_min=cog_x_min, cog_x_max=cog_x_max,
+            cog_y_min=cog_y_min, cog_y_max=cog_y_max,
+            cog_min_load_frac=cog_min_load_frac,
+            cog_active=cog_active,
+            max_overhang=max_overhang)
 
     current = best_chrom.copy()
     res = decoder(current, boxes, pallet, config, n_rots_arr, dims_all,
@@ -3356,7 +3745,7 @@ def brkga_pack_v35(
         boxes, sku_id_per_box, n_rots_arr, dims_all, L, W, H)
     sku_top_k_blocks = enumerate_top_k_blocks_per_sku(
         boxes, sku_id_per_box, n_rots_arr, dims_all, L, W, H, k_top=8)
-    weights_arr, mlot_arr, pallet_max_weight, has_constraints = \
+    weights_arr, mlot_arr, rfs_arr, pallet_max_weight, has_constraints = \
         precompute_constraint_arrays(boxes, pallet)
     # Support-ratio comes from the PackerConfig (e.g. 0.8 default, 1.0 in
     # BR geometric-only). Only enforced when has_constraints is True (i.e.
@@ -3365,6 +3754,25 @@ def brkga_pack_v35(
     # preserving the BR throughput.
     support_ratio_value = (
         float(config.support_ratio) if has_constraints else 0.0)
+    # v3.12 config-derived scalars: centroid + CoG envelope + overhang.
+    # All gated by has_constraints — on geometric BR the JIT short-circuits.
+    if has_constraints:
+        require_centroid_value = (
+            1 if config.require_centroid_supported else 0)
+        cog_x_min_value, cog_x_max_value, \
+            cog_y_min_value, cog_y_max_value, \
+            cog_min_load_frac_value, _cog_active_bool = \
+            precompute_cog_envelope(pallet, config)
+        cog_active_value = 1 if _cog_active_bool else 0
+        max_overhang_value = (
+            float(pallet.max_overhang) if config.allow_pallet_overhang else 0.0)
+    else:
+        require_centroid_value = 0
+        cog_x_min_value, cog_x_max_value = -1e18, 1e18
+        cog_y_min_value, cog_y_max_value = -1e18, 1e18
+        cog_min_load_frac_value = 0.0
+        cog_active_value = 0
+        max_overhang_value = 0.0
     chrom_size = 2 * n + (1 if use_multi_decoder else 0)
     # mode_cdf is filled in by the adaptive-selector probe (Phase 1c, below).
     # While None, decode_auto_mode falls back to uniform mode allocation.
@@ -3379,7 +3787,14 @@ def brkga_pack_v35(
                 weights=weights_arr, mlot=mlot_arr,
                 pallet_max_weight=pallet_max_weight,
                 has_constraints=has_constraints,
-                support_ratio=support_ratio_value)
+                support_ratio=support_ratio_value,
+                rfs=rfs_arr,
+                require_centroid=require_centroid_value,
+                cog_x_min=cog_x_min_value, cog_x_max=cog_x_max_value,
+                cog_y_min=cog_y_min_value, cog_y_max=cog_y_max_value,
+                cog_min_load_frac=cog_min_load_frac_value,
+                cog_active=cog_active_value,
+                max_overhang=max_overhang_value)
     else:
         def decoder(c, b, p, cfg, na, da, max_pallets=1):
             return decode_chromosome(
@@ -3387,7 +3802,14 @@ def brkga_pack_v35(
                 weights=weights_arr, mlot=mlot_arr,
                 pallet_max_weight=pallet_max_weight,
                 has_constraints=has_constraints,
-                support_ratio=support_ratio_value)
+                support_ratio=support_ratio_value,
+                rfs=rfs_arr,
+                require_centroid=require_centroid_value,
+                cog_x_min=cog_x_min_value, cog_x_max=cog_x_max_value,
+                cog_y_min=cog_y_min_value, cog_y_max=cog_y_max_value,
+                cog_min_load_frac=cog_min_load_frac_value,
+                cog_active=cog_active_value,
+                max_overhang=max_overhang_value)
 
     t_start = time.time()
 
@@ -3631,6 +4053,13 @@ def brkga_pack_v35(
             pallet_max_weight=pallet_max_weight,
             has_constraints=has_constraints,
             support_ratio=support_ratio_value,
+            rfs=rfs_arr,
+            require_centroid=require_centroid_value,
+            cog_x_min=cog_x_min_value, cog_x_max=cog_x_max_value,
+            cog_y_min=cog_y_min_value, cog_y_max=cog_y_max_value,
+            cog_min_load_frac=cog_min_load_frac_value,
+            cog_active=cog_active_value,
+            max_overhang=max_overhang_value,
             max_pallets=max_pallets, max_evals=50, verbose=verbose,
         )
         if pr_fit < best_fitness - 1e-9:
@@ -3656,6 +4085,13 @@ def brkga_pack_v35(
             pallet_max_weight=pallet_max_weight,
             has_constraints=has_constraints,
             support_ratio=support_ratio_value,
+            rfs=rfs_arr,
+            require_centroid=require_centroid_value,
+            cog_x_min=cog_x_min_value, cog_x_max=cog_x_max_value,
+            cog_y_min=cog_y_min_value, cog_y_max=cog_y_max_value,
+            cog_min_load_frac=cog_min_load_frac_value,
+            cog_active=cog_active_value,
+            max_overhang=max_overhang_value,
             max_pallets=max_pallets,
             seed=seed + 999, verbose=verbose,
         )
@@ -3682,6 +4118,13 @@ def brkga_pack_v35(
             pallet_max_weight=pallet_max_weight,
             has_constraints=has_constraints,
             support_ratio=support_ratio_value,
+            rfs=rfs_arr,
+            require_centroid=require_centroid_value,
+            cog_x_min=cog_x_min_value, cog_x_max=cog_x_max_value,
+            cog_y_min=cog_y_min_value, cog_y_max=cog_y_max_value,
+            cog_min_load_frac=cog_min_load_frac_value,
+            cog_active=cog_active_value,
+            max_overhang=max_overhang_value,
             max_pallets=max_pallets,
             time_budget_s=lns_budget_s,
             seed=seed + 1234, verbose=verbose,
