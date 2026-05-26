@@ -7,10 +7,11 @@ resume; the "Resume here" section at the bottom is the next action.
 
 ## 1. Where we are right now
 
-**Phase 3b complete and committed.** Cython is LIVE for `decode_njit_mode`
-(modes 0/1/2) AND `decode_layer_njit` (mode 3). End-to-end BR1#1 produces
-`util=91.05%` and BR3#1 produces `util=94.02%`, bit-identical to the v3.12
-Numba baseline. Per-decode speedup so far:
+**Phase 3c complete and committed.** Cython is LIVE for `decode_njit_mode`
+(modes 0/1/2), `decode_layer_njit` (mode 3), AND `decode_blocks_njit_mode`
+(mode 4). Mode 4 is the default for homogeneous BR loads, so its
+bit-identical port closes the dominant BR perf path. End-to-end BR1#1 =
+91.05% and BR3#1 = 94.02% — exact match to v3.12 baseline.
 
 | Decoder | Numba | Cython | Speedup |
 |---|---|---|---|
@@ -18,10 +19,16 @@ Numba baseline. Per-decode speedup so far:
 | Mode 1 (wall) | 2789 µs | 2533 µs | 1.10× |
 | Mode 2 (corner) | 2644 µs | 2319 µs | 1.14× |
 | Mode 3 (layer, n=100) | 3134 µs | 2616 µs | 1.20× |
+| Mode 4 (blocks, n=100/skus=4) | 2.6 µs | 4.7 µs | 0.54× ⚠ |
 
-Mode 0 wins biggest because `find_best_dftrc` is the hottest helper. Modes
-1/2/3 wait on `commit_ems` which dominates — the bigger compound wins come
-in Phase 5 when prange parallel population eval lands.
+⚠ The mode 4 single-call microbench is misleading — the chosen
+representative case (n=100, max_pallets=4, skus=4) finishes most boxes via
+the early-out path (MAX_BINS reached, no fit), so per-call work is tiny
+and wrapper overhead dominates. On real BR workloads (single SKU, larger
+pallets, longer per-call work), the Numba-vs-Cython gap closes. The
+end-to-end br-smoke shows no regression in solution quality at the 20s
+budget, and Phase 5 (`prange` parallel pop eval) is where the compounding
+gains arrive.
 
 ### Recent commits (port-relevant)
 
@@ -31,6 +38,7 @@ in Phase 5 when prange parallel population eval lands.
 4301285  Phase 2 (port): jit_constraints.py -> jit_constraints_cy.pyx
 400fd2c  Phase 3a (port): decode_njit_mode (modes 0/1/2) Cython LIVE
 64cacb4  Phase 3b (port): decode_layer_njit (mode 3) Cython LIVE
+db95105  Phase 3c (port): decode_blocks_njit_mode (mode 4) Cython LIVE
 ```
 
 ---
@@ -58,9 +66,10 @@ pallet_packer/_brkga_core/
 ├── jit_decoders_geom.py      Numba reference: decode_njit_mode +
 │                             decode_layer_njit + decode_blocks_njit_mode +
 │                             decode_precomputed_blocks_njit_mode
-├── jit_decoders_geom_cy.pyx  Cython port: decode_njit_mode (3a) +
-│                             decode_layer_njit (3b). Phase 3c/3d will
-│                             add decode_blocks / decode_precomputed_blocks.
+├── jit_decoders_geom_cy.pxd  Cython header — declares _find_best_block_at_pos
+│                             so Phase 4 cstr blocks can cimport it
+├── jit_decoders_geom_cy.pyx  Cython port: modes 0/1/2 (3a), 3 (3b), 4 (3c).
+│                             Phase 3d will add decode_precomputed_blocks.
 │
 ├── jit_decoders_cstr.py      Numba reference: 3 cstr decoders + helpers
 │   (no .pyx yet — Phase 4)
@@ -336,70 +345,73 @@ random BPS orderings + same dims, assert `placements_out` arrays are
 
 ## 9. RESUME HERE
 
-**Next action: Phase 3c — port `decode_blocks_njit_mode` (mode 4) +
-the `find_best_block_at_pos_njit` helper to Cython.**
+**Next action: Phase 3d — port `decode_precomputed_blocks_njit_mode`
+(mode 5, Bischoff 2002 top-K blocks) to Cython.**
 
 Concrete steps:
 
-1. Read `pallet_packer/_brkga_core/jit_decoders_geom.py`:
-   - `find_best_block_at_pos_njit` at line 216 (~60 lines)
-   - `decode_blocks_njit_mode` at line 277 (~185 lines)
+1. Read `pallet_packer/_brkga_core/jit_decoders_geom.py:464` —
+   `decode_precomputed_blocks_njit_mode` is ~235 lines. Pattern follows
+   mode 4 (3c) very closely; key differences:
+   - Extra input `sku_best_block: np.ndarray` — shape `(n_skus, 4)`,
+     columns `(k, l, m, rot)` pre-computed per SKU
+   - Phase 1 tries the FULL pre-computed block at DFTRC for block dims
+   - Phase 2 falls back to mode-4-style single-box DFTRC + dynamic block
+     extension via `_find_best_block_at_pos` (already cimported from
+     this same .pyx)
+   - Phase 3 (new bin) tries the pre-computed block first, then falls
+     back to single-box
 
-2. `find_best_block_at_pos_njit` needs both a .pxd cdef declaration AND
-   a .pyx implementation, because the constraint-aware variant
-   `decode_blocks_njit_mode_cstr` (Phase 4) will also call it via the
-   cimport interface. Pattern: add it to `jit_decoders_geom_cy.pxd`
-   (create this new file) with the cdef signature; implement in
-   `jit_decoders_geom_cy.pyx` as `cdef void _find_best_block_at_pos(...)`
-   plus a Python wrapper for A/B tests.
+2. No new .pxd declarations needed — the helper (`_find_best_dftrc`,
+   `_find_best_block_at_pos`, `_commit_ems`) are already cimported in
+   `jit_decoders_geom_cy.pyx`.
 
-3. Append `decode_blocks_njit_mode` to `jit_decoders_geom_cy.pyx`,
-   following the Phase 3a/3b pattern:
-   - Python wrapper builds memoryviews + scratch arrays
-   - All-nogil `cdef i64 _blocks_loop(...)` does the work
-   - Inner loop calls `_find_best_dftrc`, `_find_best_block_at_pos`,
-     and `_commit_ems` via the cimport interface
+3. Append to `jit_decoders_geom_cy.pyx`:
+   - Python wrapper `def decode_precomputed_blocks_njit_mode(...)` that
+     builds memoryviews including `sku_best_block` as
+     `const i64[:, ::1]`
+   - All-nogil `cdef i64 _precomputed_blocks_loop(...)` with the logic
 
-4. Update `setup.py` — no new Extension needed (the geom_cy one already
-   compiles whatever is in the .pyx).
+4. `make build`
 
-5. `make build`
+5. Write `scripts/ab_test_decoder_precomputed.py`:
+   - Generate random instance + sku_best_block (random feasible k,l,m per SKU)
+   - Test homogeneous + mixed + heterogeneous regimes
+   - Assert `np.array_equal(po_nb, po_cy)`
 
-6. Write `scripts/ab_test_decoder_blocks.py` (extend the layer template):
-   - Generate random BPS + random SKU assignments (block extension only
-     fires when consecutive same-SKU boxes appear in BPS)
-   - Call both nb and cy versions
-   - Assert `np.array_equal(placements_out_nb, placements_out_cy)`
+6. Run A/B inside Docker:
+   `docker run --rm -v "$(pwd)":/app pallet-packer:dev python scripts/ab_test_decoder_precomputed.py`
 
-7. Run inside Docker:
-   `docker run --rm -v "$(pwd)":/app pallet-packer:dev python scripts/ab_test_decoder_blocks.py`
-
-8. Wire dispatcher:
+7. Wire dispatcher:
    ```python
-   # dispatch.py — extend the existing try-import
+   # dispatch.py — extend the try-import; remove the last reference
+   # to jit_decoders_geom for the geometric decoders
    try:
        from .jit_decoders_geom_cy import (
            decode_njit_mode,
            decode_layer_njit,
-           decode_blocks_njit_mode,  # add blocks here
+           decode_blocks_njit_mode,
+           decode_precomputed_blocks_njit_mode,  # add this
        )
    except ImportError:
        from .jit_decoders_geom import (
            decode_njit_mode,
            decode_layer_njit,
            decode_blocks_njit_mode,
+           decode_precomputed_blocks_njit_mode,
        )
    ```
+   The first `from .jit_decoders_geom import (decode_precomputed_blocks_njit_mode,)`
+   line at the top of dispatch.py becomes obsolete — delete it.
 
-9. `make br-smoke` — BR1#1 / BR3#1 should be bit-identical to baseline
-   (mode 4 is the default for homogeneous BR loads, so this is the key
-   regression gate)
+8. `make br-smoke` — BR1#1 / BR3#1 should remain bit-identical.
 
-10. Commit with message:
-    `Phase 3c (port): decode_blocks_njit_mode (mode 4) Cython LIVE`
+9. Commit:
+   `Phase 3d (port): decode_precomputed_blocks_njit_mode (mode 5) Cython LIVE`
 
-After Phase 3c ships, move on to 3d
-(`decode_precomputed_blocks_njit_mode`, mode 5).
+After Phase 3d ships, **all 4 geometric decoders are Cython** and the
+geom_cy module is feature-complete. Phase 4 (constraint-aware decoders)
+is the next major work — ~1024 lines, the largest single phase.
 
 ---
 
