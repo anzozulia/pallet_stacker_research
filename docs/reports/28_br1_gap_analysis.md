@@ -129,15 +129,94 @@ each gets a different chance.
 
 ---
 
-## 4. Diagnostic data needed
+## 4. Diagnostic results
 
-(Running in background as of this writeup; results to be appended.)
+### 4.1 Saturation curve (BR1#8 at 60/120/240 s)
 
-- Saturation curve on BR1#1, #5, #8 at budgets 30/60/120/240 s
-- Per-experiment A/B on first 5 BR1 instances (LNS on/off)
+| Budget | Final util | Actual runtime |
+|---|---:|---:|
+| 60 s | 94.33 % | 49.0 s |
+| 120 s | 94.33 % | 50.1 s |
+| 240 s | 94.33 % | 49.8 s |
 
-When complete, this doc will be amended with empirical numbers and
-the experiment plan will be re-ranked.
+**The algorithm terminates at ~49 s regardless of available budget**
+and produces the identical 94.33 % util. This is `patience=200` kicking
+in — with Phase 5's faster decode rate, 200 stagnant generations now
+take ~10–20 s instead of the original ~80 s.
+
+The full 240 s budget run only uses 49 s. We're leaving **80 % of the
+budget unused** when stuck.
+
+### 4.2 LNS A/B (5 instances, 30 s budget)
+
+| Instance | LS only | LS + LNS | Δ |
+|---|---:|---:|---:|
+| BR1#1 | 91.05 % | 91.05 % | +0.00 |
+| BR1#2 | 91.36 % | 92.20 % | **+0.84** |
+| BR1#3 | 88.11 % | 88.11 % | +0.00 |
+| BR1#4 | 86.91 % | 86.91 % | +0.00 |
+| BR1#5 | 94.61 % | 94.63 % | +0.02 |
+| **Mean** | 90.41 % | 90.58 % | **+0.17** |
+
+LNS alone is marginal — BR1#2 is the only meaningful gain. The
+hypothesis is that LNS at the *end* (after BRKGA already terminated)
+isn't enough — the BRKGA itself stopped at saturation and the LNS
+gets a single short pass from the local optimum.
+
+### 4.3 Implications
+
+The real bottleneck is **early termination via patience**, not the
+absence of LNS. The right fix is one of:
+
+- **Bump patience** (e.g. 200 → 2000): keeps BRKGA running through
+  the full budget so polish + diversification mechanisms have time.
+- **Patience-triggered LNS** instead of termination: when patience
+  fires, perturb elites + continue.
+- **Patience-triggered restart**: full reset of non-elite half.
+
+A focused test is currently running (`test_patience_impact.py`) to
+quantify the effect of `patience=200` vs `patience=2000` ± LNS.
+
+### 4.4 Patience test results — and the diagnosis pivot
+
+| Instance | p=200 | p=2000 | p=2000+LNS | rt p=200 | rt p=2000 |
+|---|---:|---:|---:|---:|---:|
+| BR1#1 | 91.05 % | 91.05 % | 91.05 % | 15.8 s | 30.0 s |
+| BR1#2 | 91.36 % | 91.36 % | **92.20 %** | 30.1 s | 30.1 s |
+| BR1#3 | 88.11 % | 88.11 % | 88.11 % | 17.2 s | 30.0 s |
+| BR1#4 | 86.91 % | 86.91 % | 86.91 % | 30.1 s | 30.1 s |
+| BR1#5 | 94.61 % | 94.63 % | 94.63 % | 23.4 s | 30.0 s |
+
+**Patience alone unlocks 0 instances.** Even when forced to use the full
+30 s budget (e.g. BR1#1 going from 15.8 s → 30 s), util is identical.
+**The local optimum is sticky** — more BRKGA compute on the same
+population doesn't escape it.
+
+LNS unlocks 1 instance (BR1#2 by +0.84 pp); doesn't move the others.
+
+### 4.5 Revised diagnosis — basin attraction, not BRKGA compute
+
+The 4/5 instances stuck at the same value are evidence that BRKGA is
+attracted into a basin (likely shaped by the v2 seed + smart init) and
+cannot escape with the current operators. The 1/5 that responds to LNS
+suggests the basin has a "thin wall" sometimes, traversable by random
+key destruction.
+
+This shifts the highest-leverage fix from "more BRKGA time" to:
+
+- **Multi-start with different seeds**: 30 s total, split into 2×15 s
+  or 3×10 s with different seeds. Different basins explored.
+- **Skip v2 seed**: the v2 PalletPacker seed might be pulling BRKGA
+  toward the same basin every time. Removing it might find a different
+  one.
+- **Patience-triggered LNS** (not termination): when patience fires,
+  destroy 50 % of non-elite keys and continue. Already partially tested
+  via LNS post-BRKGA; running LNS *inside* BRKGA might compound.
+- **Different decoder mix**: literature uses layer-based decoders
+  exclusively for BR; we use 1/6 layer + 5/6 other. Biasing mode_cdf
+  toward layer modes might find better basins.
+
+These are now the priority experiments.
 
 ---
 
