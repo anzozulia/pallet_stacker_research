@@ -7,11 +7,9 @@ resume; the "Resume here" section at the bottom is the next action.
 
 ## 1. Where we are right now
 
-**Phase 3c complete and committed.** Cython is LIVE for `decode_njit_mode`
-(modes 0/1/2), `decode_layer_njit` (mode 3), AND `decode_blocks_njit_mode`
-(mode 4). Mode 4 is the default for homogeneous BR loads, so its
-bit-identical port closes the dominant BR perf path. End-to-end BR1#1 =
-91.05% and BR3#1 = 94.02% — exact match to v3.12 baseline.
+**Phase 3 complete (3a + 3b + 3c + 3d). All four geometric decoders are
+Cython LIVE.** End-to-end BR1#1 = 91.05% and BR3#1 = 94.02% — exact match
+to v3.12 baseline.
 
 | Decoder | Numba | Cython | Speedup |
 |---|---|---|---|
@@ -20,15 +18,16 @@ bit-identical port closes the dominant BR perf path. End-to-end BR1#1 =
 | Mode 2 (corner) | 2644 µs | 2319 µs | 1.14× |
 | Mode 3 (layer, n=100) | 3134 µs | 2616 µs | 1.20× |
 | Mode 4 (blocks, n=100/skus=4) | 2.6 µs | 4.7 µs | 0.54× ⚠ |
+| Mode 5 (precomputed, n=100/skus=4) | 8.8 µs | 11.6 µs | 0.76× ⚠ |
 
-⚠ The mode 4 single-call microbench is misleading — the chosen
-representative case (n=100, max_pallets=4, skus=4) finishes most boxes via
-the early-out path (MAX_BINS reached, no fit), so per-call work is tiny
-and wrapper overhead dominates. On real BR workloads (single SKU, larger
-pallets, longer per-call work), the Numba-vs-Cython gap closes. The
-end-to-end br-smoke shows no regression in solution quality at the 20s
-budget, and Phase 5 (`prange` parallel pop eval) is where the compounding
-gains arrive.
+⚠ Mode 4 / Mode 5 single-call microbenches are misleading — the chosen
+representative cases (n=100, max_pallets=4-6, skus=4) finish most boxes
+via the early-out path (MAX_BINS reached, no fit), so per-call work is
+tiny and Python wrapper setup dominates. On real BR workloads (single
+SKU, larger pallets, longer per-call work) the Numba-vs-Cython gap
+closes. The end-to-end br-smoke shows no regression in solution quality,
+and Phase 5 (`prange` parallel pop eval) is where the compounding gains
+arrive.
 
 ### Recent commits (port-relevant)
 
@@ -39,6 +38,7 @@ gains arrive.
 400fd2c  Phase 3a (port): decode_njit_mode (modes 0/1/2) Cython LIVE
 64cacb4  Phase 3b (port): decode_layer_njit (mode 3) Cython LIVE
 db95105  Phase 3c (port): decode_blocks_njit_mode (mode 4) Cython LIVE
+5816add  Phase 3d (port): decode_precomputed_blocks_njit_mode (mode 5) LIVE
 ```
 
 ---
@@ -65,11 +65,12 @@ pallet_packer/_brkga_core/
 │
 ├── jit_decoders_geom.py      Numba reference: decode_njit_mode +
 │                             decode_layer_njit + decode_blocks_njit_mode +
-│                             decode_precomputed_blocks_njit_mode
+│                             decode_precomputed_blocks_njit_mode (fallback)
 ├── jit_decoders_geom_cy.pxd  Cython header — declares _find_best_block_at_pos
 │                             so Phase 4 cstr blocks can cimport it
-├── jit_decoders_geom_cy.pyx  Cython port: modes 0/1/2 (3a), 3 (3b), 4 (3c).
-│                             Phase 3d will add decode_precomputed_blocks.
+├── jit_decoders_geom_cy.pyx  Cython port — COMPLETE: modes 0/1/2 (3a),
+│                             3 (3b), 4 (3c), 5 (3d). All geometric
+│                             decoders Cython-LIVE via dispatcher.
 │
 ├── jit_decoders_cstr.py      Numba reference: 3 cstr decoders + helpers
 │   (no .pyx yet — Phase 4)
@@ -345,73 +346,93 @@ random BPS orderings + same dims, assert `placements_out` arrays are
 
 ## 9. RESUME HERE
 
-**Next action: Phase 3d — port `decode_precomputed_blocks_njit_mode`
-(mode 5, Bischoff 2002 top-K blocks) to Cython.**
+**Next action: Phase 4 — port the constraint-aware decoders
+(`jit_decoders_cstr.py`, 1024 lines, 3 decoders + 2 helpers) to Cython.**
 
-Concrete steps:
+This is the largest single phase of the port. It is also the gate to
+production deployment: every industry workload (pharma, document,
+cold-chain) runs through the cstr path. Plan ~2–3 days.
 
-1. Read `pallet_packer/_brkga_core/jit_decoders_geom.py:464` —
-   `decode_precomputed_blocks_njit_mode` is ~235 lines. Pattern follows
-   mode 4 (3c) very closely; key differences:
-   - Extra input `sku_best_block: np.ndarray` — shape `(n_skus, 4)`,
-     columns `(k, l, m, rot)` pre-computed per SKU
-   - Phase 1 tries the FULL pre-computed block at DFTRC for block dims
-   - Phase 2 falls back to mode-4-style single-box DFTRC + dynamic block
-     extension via `_find_best_block_at_pos` (already cimported from
-     this same .pyx)
-   - Phase 3 (new bin) tries the pre-computed block first, then falls
-     back to single-box
+### Scope (Numba source: jit_decoders_cstr.py)
 
-2. No new .pxd declarations needed — the helper (`_find_best_dftrc`,
-   `_find_best_block_at_pos`, `_commit_ems`) are already cimported in
-   `jit_decoders_geom_cy.pyx`.
+```
+line 44   decode_njit_mode_cstr            cstr modes 0/1/2  ~250 lines
+line 299  _commit_block_placements_njit    helper            ~60 lines
+line 361  _max_block_under_constraints_njit helper            ~40 lines
+line 401  decode_blocks_njit_mode_cstr     cstr mode 4       ~350 lines
+line 748  decode_layer_njit_cstr           cstr mode 3       ~280 lines
+```
 
-3. Append to `jit_decoders_geom_cy.pyx`:
-   - Python wrapper `def decode_precomputed_blocks_njit_mode(...)` that
-     builds memoryviews including `sku_best_block` as
-     `const i64[:, ::1]`
-   - All-nogil `cdef i64 _precomputed_blocks_loop(...)` with the logic
+### Prerequisite: jit_constraints_cy.pxd
 
-4. `make build`
+The cstr decoders all call helpers from `jit_constraints_cy.pyx`
+(Phase 2). Today those are Python-callable defs only — no cdef nogil
+interface. To call them from inside a nogil decoder loop, we need a .pxd:
 
-5. Write `scripts/ab_test_decoder_precomputed.py`:
-   - Generate random instance + sku_best_block (random feasible k,l,m per SKU)
-   - Test homogeneous + mixed + heterogeneous regimes
-   - Assert `np.array_equal(po_nb, po_cy)`
+```cython
+# jit_constraints_cy.pxd — NEW FILE
+from libc.stdint cimport int64_t
+ctypedef int64_t i64
 
-6. Run A/B inside Docker:
-   `docker run --rm -v "$(pwd)":/app pallet-packer:dev python scripts/ab_test_decoder_precomputed.py`
+cdef bint _check_load_on_top(
+    const i64[:, ::1] placements, i64 n_placed,
+    const i64[:, ::1] box_bottoms, const i64[:, ::1] box_tops,
+    ...   # full signature: read jit_constraints.py:25-130
+) noexcept nogil
 
-7. Wire dispatcher:
-   ```python
-   # dispatch.py — extend the try-import; remove the last reference
-   # to jit_decoders_geom for the geometric decoders
-   try:
-       from .jit_decoders_geom_cy import (
-           decode_njit_mode,
-           decode_layer_njit,
-           decode_blocks_njit_mode,
-           decode_precomputed_blocks_njit_mode,  # add this
-       )
-   except ImportError:
-       from .jit_decoders_geom import (
-           decode_njit_mode,
-           decode_layer_njit,
-           decode_blocks_njit_mode,
-           decode_precomputed_blocks_njit_mode,
-       )
+cdef bint _check_cog_envelope(...) noexcept nogil
+cdef void _apply_cog_contribution(...) noexcept nogil
+cdef void _apply_load_contribution(...) noexcept nogil
+```
+
+This will require splitting `jit_constraints_cy.pyx` into a `cdef` core
++ `def` Python wrapper for each helper, mirroring the Phase 1 pattern
+(see `jit_primitives_cy.pyx` for the template).
+
+**Sub-step Phase 4.0** — do this refactor FIRST and rerun the existing
+`scripts/ab_test_constraints.py` to confirm the helpers stay
+bit-identical. Then proceed to the decoders.
+
+### Per-decoder steps (apply to each of the 3)
+
+1. Read the Numba source and identify all Cython helpers it needs:
+   - `_find_best_dftrc`, `_find_best_wall`, `_find_best_corner`,
+     `_find_best_in_slab` from `jit_primitives_cy` / `v3fast_cy`
+   - `_find_best_block_at_pos` from `jit_decoders_geom_cy`
+   - `_check_load_on_top`, `_check_cog_envelope`,
+     `_apply_load_contribution`, `_apply_cog_contribution` from
+     `jit_constraints_cy` (after the .pxd is in place)
+   - `_commit_ems` from `v3fast_cy`
+
+2. Add to `jit_decoders_cstr_cy.pyx` (new file):
+   - Python wrapper `def decode_..._cstr(...)` matching the Numba signature
+   - All-nogil `cdef i64 _..._loop(...)` body
+
+3. Add the `Extension(...)` for `jit_decoders_cstr_cy` to setup.py.
+
+4. Write `scripts/ab_test_decoder_<name>_cstr.py`:
+   - Construct cases that fire each constraint (weight cap, fragility,
+     support ratio, centroid req, CoG envelope, overhang)
+   - Assert array_equal placements
+
+5. Wire dispatcher (extend the existing try-import — three more names).
+
+6. Smoke-test against `industry_smoke` (in addition to `br-smoke`):
+   ```bash
+   make industry-smoke
    ```
-   The first `from .jit_decoders_geom import (decode_precomputed_blocks_njit_mode,)`
-   line at the top of dispatch.py becomes obsolete — delete it.
+   Expected: IND2 = 4p / 0 unp / 0 errs; IND9 ≈ 85.5 % util₁; IND10 ≈ 95.4 % util₁
 
-8. `make br-smoke` — BR1#1 / BR3#1 should remain bit-identical.
+7. Commit each decoder separately:
+   - `Phase 4a (port): jit_constraints .pxd surface + helper refactor`
+   - `Phase 4b (port): decode_njit_mode_cstr (cstr modes 0/1/2) Cython LIVE`
+   - `Phase 4c (port): decode_blocks_njit_mode_cstr (cstr mode 4) Cython LIVE`
+   - `Phase 4d (port): decode_layer_njit_cstr (cstr mode 3) Cython LIVE`
 
-9. Commit:
-   `Phase 3d (port): decode_precomputed_blocks_njit_mode (mode 5) Cython LIVE`
+### After Phase 4
 
-After Phase 3d ships, **all 4 geometric decoders are Cython** and the
-geom_cy module is feature-complete. Phase 4 (constraint-aware decoders)
-is the next major work — ~1024 lines, the largest single phase.
+The entire BRKGA hot path is Cython. Phase 5 (`prange` parallel pop eval)
+becomes the next multiplier — see Section 5 above for details.
 
 ---
 
