@@ -7,38 +7,43 @@ resume; the "Resume here" section at the bottom is the next action.
 
 ## 1. Where we are right now
 
-**Phase 3 complete (3a + 3b + 3c + 3d). All four geometric decoders are
-Cython LIVE.** End-to-end BR1#1 = 91.05% and BR3#1 = 94.02% — exact match
-to v3.12 baseline.
+**Phase 3 + Phase 4 complete. The entire BRKGA hot path runs through
+Cython.** End-to-end BR1#1 = 91.05% / BR3#1 = 94.02% / IND2 = 4p 0unp
+0errs / IND9 = u1=85.5% / IND10 = u1=95.4% — all bit-identical to the
+v3.12 baseline.
 
 | Decoder | Numba | Cython | Speedup |
 |---|---|---|---|
-| Mode 0 (DFTRC) | 4607 µs | 2681 µs | **1.72×** |
-| Mode 1 (wall) | 2789 µs | 2533 µs | 1.10× |
-| Mode 2 (corner) | 2644 µs | 2319 µs | 1.14× |
-| Mode 3 (layer, n=100) | 3134 µs | 2616 µs | 1.20× |
-| Mode 4 (blocks, n=100/skus=4) | 2.6 µs | 4.7 µs | 0.54× ⚠ |
-| Mode 5 (precomputed, n=100/skus=4) | 8.8 µs | 11.6 µs | 0.76× ⚠ |
+| Geom mode 0 (DFTRC) | 4607 µs | 2681 µs | **1.72×** |
+| Geom mode 1 (wall) | 2789 µs | 2533 µs | 1.10× |
+| Geom mode 2 (corner) | 2644 µs | 2319 µs | 1.14× |
+| Geom mode 3 (layer, n=100) | 3134 µs | 2616 µs | 1.20× |
+| Geom mode 4 (blocks, small case) | 2.6 µs | 4.7 µs | 0.54× ⚠ |
+| Geom mode 5 (precomputed, small case) | 8.8 µs | 11.6 µs | 0.76× ⚠ |
+| Cstr modes 0/1/2 (mode 0, n=100) | 1272 µs | 1163 µs | 1.09× |
+| Cstr mode 4 (blocks, small case) | 12.1 µs | 15.9 µs | 0.76× ⚠ |
+| Cstr mode 3 (layer, n=100) | 653 µs | 497 µs | **1.31×** |
 
-⚠ Mode 4 / Mode 5 single-call microbenches are misleading — the chosen
-representative cases (n=100, max_pallets=4-6, skus=4) finish most boxes
-via the early-out path (MAX_BINS reached, no fit), so per-call work is
-tiny and Python wrapper setup dominates. On real BR workloads (single
-SKU, larger pallets, longer per-call work) the Numba-vs-Cython gap
-closes. The end-to-end br-smoke shows no regression in solution quality,
-and Phase 5 (`prange` parallel pop eval) is where the compounding gains
-arrive.
+⚠ Small-case microbenches are misleading — Python wrapper setup
+dominates per-call work when MAX_BINS is small and most boxes early-out.
+End-to-end br-smoke + industry-smoke confirm no quality regression
+across all eight industry workloads. Phase 5 (`prange` parallel pop
+eval) is where the multi-core multiplier kicks in.
 
 ### Recent commits (port-relevant)
 
 ```
 35c5852  Phase 0: Docker + Cython build infra
-04ffabc  Phase 1 (port): jit_primitives.py -> jit_primitives_cy.pyx
-4301285  Phase 2 (port): jit_constraints.py -> jit_constraints_cy.pyx
-400fd2c  Phase 3a (port): decode_njit_mode (modes 0/1/2) Cython LIVE
-64cacb4  Phase 3b (port): decode_layer_njit (mode 3) Cython LIVE
-db95105  Phase 3c (port): decode_blocks_njit_mode (mode 4) Cython LIVE
-5816add  Phase 3d (port): decode_precomputed_blocks_njit_mode (mode 5) LIVE
+04ffabc  Phase 1 (port): jit_primitives_cy
+4301285  Phase 2 (port): jit_constraints_cy
+400fd2c  Phase 3a: decode_njit_mode (modes 0/1/2) LIVE
+64cacb4  Phase 3b: decode_layer_njit (mode 3) LIVE
+db95105  Phase 3c: decode_blocks_njit_mode (mode 4) LIVE
+5816add  Phase 3d: decode_precomputed_blocks_njit_mode (mode 5) LIVE
+794a9a9  Phase 4a: jit_constraints_cy.pxd surface
+8f496f8  Phase 4b: decode_njit_mode_cstr (cstr 0/1/2) LIVE
+4bc96ba  Phase 4c: decode_blocks_njit_mode_cstr (cstr 4) LIVE
+5a0664b  Phase 4d: decode_layer_njit_cstr      (cstr 3) LIVE
 ```
 
 ---
@@ -58,7 +63,8 @@ pallet_packer/_brkga_core/
 ├── jit_primitives_cy.pyx     Cython port (find_best_wall/corner/in_slab)
 │
 ├── jit_constraints.py        Numba reference (fallback)
-├── jit_constraints_cy.pyx    Cython port — NOT YET WIRED LIVE
+├── jit_constraints_cy.pxd    Cython header — cdef nogil surface for cstr
+├── jit_constraints_cy.pyx    Cython port — used by Phase 4 cstr decoders
 │
 ├── v3fast_cy.pxd             Cython header for brkga_v3_fast helpers
 ├── v3fast_cy.pyx             Cython port of find_best_dftrc + commit_ems
@@ -72,8 +78,9 @@ pallet_packer/_brkga_core/
 │                             3 (3b), 4 (3c), 5 (3d). All geometric
 │                             decoders Cython-LIVE via dispatcher.
 │
-├── jit_decoders_cstr.py      Numba reference: 3 cstr decoders + helpers
-│   (no .pyx yet — Phase 4)
+├── jit_decoders_cstr.py      Numba reference (fallback)
+├── jit_decoders_cstr_cy.pyx  Cython port — COMPLETE: all 3 cstr decoders
+│                             (mode 0/1/2, mode 3, mode 4) Cython-LIVE
 │
 ├── dispatch.py               try Cython first, fall back to Numba
 ├── polish.py                 pure Python (LS + PR + LNS)
@@ -346,93 +353,78 @@ random BPS orderings + same dims, assert `placements_out` arrays are
 
 ## 9. RESUME HERE
 
-**Next action: Phase 4 — port the constraint-aware decoders
-(`jit_decoders_cstr.py`, 1024 lines, 3 decoders + 2 helpers) to Cython.**
+**Next action: Phase 5 — `prange` parallel population evaluation.**
 
-This is the largest single phase of the port. It is also the gate to
-production deployment: every industry workload (pharma, document,
-cold-chain) runs through the cstr path. Plan ~2–3 days.
+The single-thread Cython port is done; per-decode speedups are modest
+(1.1–1.7×) because the inner loops are already cache-friendly C code.
+The real multiplier is multi-core: Cython `cython.parallel.prange` can
+dispatch each chromosome's decode to a different thread, since
+`_commit_ems` and the decoders are all `noexcept nogil`. On an 8-core
+M-series CPU we expect 4–8× linear scaling for embarrassingly parallel
+population evaluation.
 
-### Scope (Numba source: jit_decoders_cstr.py)
+### Plan
 
-```
-line 44   decode_njit_mode_cstr            cstr modes 0/1/2  ~250 lines
-line 299  _commit_block_placements_njit    helper            ~60 lines
-line 361  _max_block_under_constraints_njit helper            ~40 lines
-line 401  decode_blocks_njit_mode_cstr     cstr mode 4       ~350 lines
-line 748  decode_layer_njit_cstr           cstr mode 3       ~280 lines
-```
-
-### Prerequisite: jit_constraints_cy.pxd
-
-The cstr decoders all call helpers from `jit_constraints_cy.pyx`
-(Phase 2). Today those are Python-callable defs only — no cdef nogil
-interface. To call them from inside a nogil decoder loop, we need a .pxd:
-
-```cython
-# jit_constraints_cy.pxd — NEW FILE
-from libc.stdint cimport int64_t
-ctypedef int64_t i64
-
-cdef bint _check_load_on_top(
-    const i64[:, ::1] placements, i64 n_placed,
-    const i64[:, ::1] box_bottoms, const i64[:, ::1] box_tops,
-    ...   # full signature: read jit_constraints.py:25-130
-) noexcept nogil
-
-cdef bint _check_cog_envelope(...) noexcept nogil
-cdef void _apply_cog_contribution(...) noexcept nogil
-cdef void _apply_load_contribution(...) noexcept nogil
-```
-
-This will require splitting `jit_constraints_cy.pyx` into a `cdef` core
-+ `def` Python wrapper for each helper, mirroring the Phase 1 pattern
-(see `jit_primitives_cy.pyx` for the template).
-
-**Sub-step Phase 4.0** — do this refactor FIRST and rerun the existing
-`scripts/ab_test_constraints.py` to confirm the helpers stay
-bit-identical. Then proceed to the decoders.
-
-### Per-decoder steps (apply to each of the 3)
-
-1. Read the Numba source and identify all Cython helpers it needs:
-   - `_find_best_dftrc`, `_find_best_wall`, `_find_best_corner`,
-     `_find_best_in_slab` from `jit_primitives_cy` / `v3fast_cy`
-   - `_find_best_block_at_pos` from `jit_decoders_geom_cy`
-   - `_check_load_on_top`, `_check_cog_envelope`,
-     `_apply_load_contribution`, `_apply_cog_contribution` from
-     `jit_constraints_cy` (after the .pxd is in place)
-   - `_commit_ems` from `v3fast_cy`
-
-2. Add to `jit_decoders_cstr_cy.pyx` (new file):
-   - Python wrapper `def decode_..._cstr(...)` matching the Numba signature
-   - All-nogil `cdef i64 _..._loop(...)` body
-
-3. Add the `Extension(...)` for `jit_decoders_cstr_cy` to setup.py.
-
-4. Write `scripts/ab_test_decoder_<name>_cstr.py`:
-   - Construct cases that fire each constraint (weight cap, fragility,
-     support ratio, centroid req, CoG envelope, overhang)
-   - Assert array_equal placements
-
-5. Wire dispatcher (extend the existing try-import — three more names).
-
-6. Smoke-test against `industry_smoke` (in addition to `br-smoke`):
-   ```bash
-   make industry-smoke
+1. **Add a batch-decode entry point** (`jit_decoders_geom_cy.pyx` and/or
+   `jit_decoders_cstr_cy.pyx`). Signature roughly:
+   ```cython
+   cpdef void decode_batch_geom(
+       const double[:, ::1] chromosomes,   # (pop_size, chrom_len)
+       const i64[::1] n_rots_per_box,
+       const i64[:, :, ::1] dims_all,
+       i64 L, i64 W, i64 H,
+       i64 max_pallets, int mode,
+       i64[:, :, ::1] placements_out_all,  # (pop_size, n, 6)
+       i64[::1] n_bins_out,                # (pop_size,)
+   ):
+       cdef Py_ssize_t i
+       for i in prange(pop_size, nogil=True, schedule='static'):
+           # decode chromosomes[i] into placements_out_all[i]
+           ...
    ```
-   Expected: IND2 = 4p / 0 unp / 0 errs; IND9 ≈ 85.5 % util₁; IND10 ≈ 95.4 % util₁
 
-7. Commit each decoder separately:
-   - `Phase 4a (port): jit_constraints .pxd surface + helper refactor`
-   - `Phase 4b (port): decode_njit_mode_cstr (cstr modes 0/1/2) Cython LIVE`
-   - `Phase 4c (port): decode_blocks_njit_mode_cstr (cstr mode 4) Cython LIVE`
-   - `Phase 4d (port): decode_layer_njit_cstr (cstr mode 3) Cython LIVE`
+2. **Determinism contract** — must remain byte-identical to the sequential
+   path at fixed seed:
+   - Pre-allocate one set of scratch arrays per thread (not per call).
+     The easiest way is `cython.parallel.threadid()` to index into a
+     `(n_threads, MAX_BINS, MAX_EMS_C, 2, 3)` scratch.
+   - No work-stealing — use `schedule='static'` so chromosome i always
+     lands on the same thread for a given pop_size, regardless of run.
+   - The sort `np.argsort(bps)` must run outside the nogil region (it's
+     numpy/Python). One option: move the argsort into the wrapper and
+     pass `order` as `const i64[:, ::1]` of shape `(pop_size, n)`.
 
-### After Phase 4
+3. **Driver integration** (`driver.py`):
+   - Replace the per-individual `decode_chromosome` loop in the BRKGA
+     evolution step with a single `decode_batch_*` call. Wrap fitness
+     extraction (count unpacked + util) in a vectorised post-pass.
+   - Both geometric and constraint-aware paths get their own batch
+     entry, picked by `cstr_active` flag in `decode_chromosome`.
 
-The entire BRKGA hot path is Cython. Phase 5 (`prange` parallel pop eval)
-becomes the next multiplier — see Section 5 above for details.
+4. **Validation**:
+   - `make br-smoke` must still produce BR1#1=91.05% / BR3#1=94.02%.
+   - `make industry-smoke` must still produce IND2=4p/0unp/0errs etc.
+   - Wall-clock should drop by ~`n_cores` × the per-call Python overhead
+     savings on an 8-core machine.
+
+5. **Benchmark** (new script `scripts/bench_batch_decode.py`):
+   - Time `decode_chromosome` × pop_size vs `decode_batch_*` on one
+     pop_size=80 population.
+   - Report scaling for thread counts 1..n_cores.
+
+6. **Commit** each step separately:
+   - `Phase 5a (parallel): decode_batch_geom prange entry point`
+   - `Phase 5b (parallel): decode_batch_cstr prange entry point`
+   - `Phase 5c (parallel): driver.py integration`
+
+### After Phase 5 → Phase 6
+
+The final phase is end-to-end re-eval against the literature baselines:
+- Full BR n=10 at the canonical 30s budget per instance.
+- Compare against Gonçalves-Resende 2013 SOTA on BR1 (target: close
+  the 1.57pp gap).
+- Industry-grade workloads at production-realistic budgets.
+- Write `docs/reports/27_port_complete.md` with final numbers.
 
 ---
 
