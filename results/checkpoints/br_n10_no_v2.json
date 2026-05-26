@@ -1,0 +1,282 @@
+[
+  {
+    "set_id": "BR1",
+    "instance_id": 1,
+    "n_boxes": 112,
+    "util_pallet1": 0.9117606004994413,
+    "runtime_s": 13.66963529586792
+  },
+  {
+    "set_id": "BR1",
+    "instance_id": 2,
+    "n_boxes": 138,
+    "util_pallet1": 0.9261515765237315,
+    "runtime_s": 25.329569816589355
+  },
+  {
+    "set_id": "BR1",
+    "instance_id": 3,
+    "n_boxes": 127,
+    "util_pallet1": 0.8810599801526241,
+    "runtime_s": 15.373126745223999
+  },
+  {
+    "set_id": "BR1",
+    "instance_id": 4,
+    "n_boxes": 197,
+    "util_pallet1": 0.8682866051482205,
+    "runtime_s": 30.086915731430054
+  },
+  {
+    "set_id": "BR1",
+    "instance_id": 5,
+    "n_boxes": 136,
+    "util_pallet1": 0.946256117558148,
+    "runtime_s": 20.457964658737183
+  },
+  {
+    "set_id": "BR1",
+    "instance_id": 6,
+    "n_boxes": 147,
+    "util_pallet1": 0.9190704302679794,
+    "runtime_s": 22.40144395828247
+  },
+  {
+    "set_id": "BR1",
+    "instance_id": 7,
+    "n_boxes": 126,
+    "util_pallet1": 0.9093144413256132,
+    "runtime_s": 23.820099592208862
+  },
+  {
+    "set_id": "BR1",
+    "instance_id": 8,
+    "n_boxes": 180,
+    "util_pallet1": 0.9638792380894142,
+    "runtime_s": 30.04586911201477
+  },
+  {
+    "set_id": "BR1",
+    "instance_id": 9,
+    "n_boxes": 101,
+    "util_pallet1": 0.8854927380272666,
+    "runtime_s": 10.761619567871094
+  },
+  {
+    "set_id": "BR1",
+    "instance_id": 10,
+    "n_boxes": 130,
+    "util_pallet1": 0.9257895579937533,
+    "runtime_s": 16.884698390960693
+  },
+  {
+    "set_id": "BR3",
+    "instance_id": 1,
+    "n_boxes": 94,
+    "util_pallet1": 0.9455712634456667,
+    "runtime_s": 27.535454750061035
+  },
+  {
+    "set_id": "BR3",
+    "instance_id": 2,
+    "n_boxes": 115,
+    "util_pallet1": 0.9521814167144683,
+    "runtime_s": 28.48622965812683
+  },
+  {
+    "set_id": "BR3",
+    "instance_id": 3,
+    "n_boxes": 143,
+    "util_pallet1": 0.9279094917117597,
+    "runtime_s": 30.065842151641846
+  },
+  {
+    "set_id": "BR3",
+    "instance_id": 4,
+    "n_boxes": 185,
+    "util_pallet1": 0.9368320038604675,
+    "runtime_s": 30.24901795387268
+  },
+  {
+    "set_id": "BR3",
+    "instance_id": 5,
+    "n_boxes": 113,
+    "util_pallet1": 0.9455338751370074,
+    "runtime_s": 30.01368474960327
+  },
+  {
+    "set_id": "BR3",
+    "instance_id": 6,
+    "n_boxes": 143,
+    "util_pallet1": 0.9447297772454422,
+    "runtime_s": 30.10035753250122
+  },
+  {
+    "set_id": "BR3",
+    "instance_id": 7,
+    "n_boxes": 144,
+    "util_pallet1": 0.9391011252385374,
+    "runtime_s": 30.03770899772644
+  },
+  {
+    "set_id": "BR3",
+    "instance_id": 8,
+    "n_boxes": 104,
+    "util_pallet1": 0.933361737369897,
+    "runtime_s": 24.350406408309937
+  },
+  {
+    "set_id": "BR3",
+    "instance_id": 9,
+    "n_boxes": 133,
+    "util_pallet1": 0.9231120233489156,
+    "runtime_s": 30.127789735794067
+  },
+  {
+    "set_id": "BR3",
+    "instance_id": 10,
+    "n_boxes": 180,
+    "util_pallet1": 0.9355814397124324,
+    "runtime_s": 30.056853532791138
+  },
+  {
+    "set_id": "BR5",
+    "instance_id": 1,
+    "n_boxes": 98,
+    "util_pallet1": 0.9334485447140908,
+    "runtime_s": 30.039015293121338
+  },
+  {
+    "set_id": "BR5",
+    "instance_id": 2,
+    "n_boxes": 138,
+    "util_pallet1": 0.929133568320238,
+    "runtime_s": 30.09227991104126
+  },
+  {
+    "set_id": "BR5",
+    "instance_id": 3,
+    "n_boxes": 133,
+    "util_pallet1": 0.926940951730198,
+    "runtime_s": 30.117435932159424
+  },
+  {
+    "set_id": "BR5",
+    "instance_id": 4,
+    "n_boxes": 142,
+    "util_pallet1": 0.9324778445191398,
+    "runtime_s": 30.165433645248413
+  },
+  {
+    "set_id": "BR5",
+    "instance_id": 5,
+    "n_boxes": 129,
+    "util_pallet1": 0.9409613680731096,
+    "runtime_s": 30.092921257019043
+  },
+  {
+    "set_id": "BR5",
+    "instance_id": 6,
+    "n_boxes": 140,
+    "util_pallet1": 0.9353944649350839,
+    "runtime_s": 30.111584901809692
+  },
+  {
+    "set_id": "BR5",
+    "instance_id": 7,
+    "n_boxes": 132,
+    "util_pallet1": 0.9270842901970846,
+    "runtime_s": 30.17606544494629
+  },
+  {
+    "set_id": "BR5",
+    "instance_id": 8,
+    "n_boxes": 98,
+    "util_pallet1": 0.9292118677470835,
+    "runtime_s": 26.71773862838745
+  },
+  {
+    "set_id": "BR5",
+    "instance_id": 9,
+    "n_boxes": 135,
+    "util_pallet1": 0.9396702251474096,
+    "runtime_s": 30.051359176635742
+  },
+  {
+    "set_id": "BR5",
+    "instance_id": 10,
+    "n_boxes": 133,
+    "util_pallet1": 0.9268712599228571,
+    "runtime_s": 30.115781545639038
+  },
+  {
+    "set_id": "BR7",
+    "instance_id": 1,
+    "n_boxes": 110,
+    "util_pallet1": 0.9291212052528414,
+    "runtime_s": 30.0795955657959
+  },
+  {
+    "set_id": "BR7",
+    "instance_id": 2,
+    "n_boxes": 129,
+    "util_pallet1": 0.9244467361169733,
+    "runtime_s": 30.05856466293335
+  },
+  {
+    "set_id": "BR7",
+    "instance_id": 3,
+    "n_boxes": 126,
+    "util_pallet1": 0.9218116413567203,
+    "runtime_s": 30.11734366416931
+  },
+  {
+    "set_id": "BR7",
+    "instance_id": 4,
+    "n_boxes": 153,
+    "util_pallet1": 0.941741770085498,
+    "runtime_s": 30.109317541122437
+  },
+  {
+    "set_id": "BR7",
+    "instance_id": 5,
+    "n_boxes": 126,
+    "util_pallet1": 0.9232058763121634,
+    "runtime_s": 30.057533025741577
+  },
+  {
+    "set_id": "BR7",
+    "instance_id": 6,
+    "n_boxes": 156,
+    "util_pallet1": 0.936361908192925,
+    "runtime_s": 30.23103380203247
+  },
+  {
+    "set_id": "BR7",
+    "instance_id": 7,
+    "n_boxes": 109,
+    "util_pallet1": 0.9136901695667808,
+    "runtime_s": 30.042399644851685
+  },
+  {
+    "set_id": "BR7",
+    "instance_id": 8,
+    "n_boxes": 119,
+    "util_pallet1": 0.9330883208229283,
+    "runtime_s": 30.107709884643555
+  },
+  {
+    "set_id": "BR7",
+    "instance_id": 9,
+    "n_boxes": 129,
+    "util_pallet1": 0.9243101109286193,
+    "runtime_s": 30.137784004211426
+  },
+  {
+    "set_id": "BR7",
+    "instance_id": 10,
+    "n_boxes": 135,
+    "util_pallet1": 0.9406808062049304,
+    "runtime_s": 30.055588960647583
+  }
+]
