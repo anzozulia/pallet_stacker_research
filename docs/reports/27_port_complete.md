@@ -7,10 +7,11 @@ evaluation across cores. All canonical seeds produce **bit-identical**
 results to the v3.12 Numba baseline.
 
 > **Headline numbers.** End-to-end throughput **2.6×–5.3× higher** at
-> the same time budget. BR1#1 = 91.05 % util₁, BR3#1 = 94.02 % util₁,
-> IND2 = 4 p / 0 unp / 0 errs, IND9 = 85.5 %, IND10 = 95.4 % — all
-> exact match to the pre-port baseline. Algorithmic quality preserved;
-> wall-clock cut.
+> the same time budget. Algorithmic quality not just preserved — BR
+> mean util across 40 instances is **+0.25 pp** vs v3.12 baseline
+> (17 wins / 22 ties / 1 loss); BR7 alone gains +0.46 pp on average.
+> All canonical anchors (BR1#1=91.05 %, BR3#1=94.02 %, IND2 = 4 p /
+> 0 unp / 0 errs, IND9 = 85.5 %, IND10 = 95.4 %) match exactly.
 
 ---
 
@@ -95,6 +96,9 @@ toolchain (e.g. raw checkout on a fresh Python install).
 | `03b54ca` | 5a | `decode_batch_njit_mode` — prange batch decode, 7.85 × per-call |
 | `4c799d9` | 5b | Batch entries for all remaining decoders (geom 3/4/5 + 3 cstr) |
 | `555158f` | 5c | `driver.py` integration via `decode_population_fitness` |
+| `ed7a35e` | 6a | Wall-clock benchmark — 2.63 ×-5.27 × decodes/sec measured |
+| `2278104` | 6c | This report |
+| `5247082` | 6d | Critical fix: per-chromosome top-K block resolution in batch |
 
 Every commit was gated on:
 
@@ -200,19 +204,60 @@ wrapper allocation that dominates the small-instance microbench).
 
 ## 7. Where the algorithm stands
 
-BR1 mean util at 30 s budget (n=10 instances):
+### 7.1 BR n=10 at 30 s budget — completed
+
+Final mean util at the canonical 30 s budget (n=10 instances per set,
+4 standard BR sets available — BR1/3/5/7):
+
+| Set | v3.8 baseline | Post-Phase-5 | Δ mean | W/T/L |
+|---|---:|---:|---:|---|
+| BR1 | 91.03 % | 91.03 % | +0.00 pp | 0/10/0 |
+| BR3 | 93.35 % | 93.56 % | +0.21 pp | 3/7/0 |
+| BR5 | 92.59 % | 92.92 % | +0.33 pp | 6/4/0 |
+| BR7 | 92.50 % | 92.96 % | +0.46 pp | 8/1/1 |
+| **Overall** | — | — | **+0.25 pp** | **17/22/1** |
+
+17 wins, 22 ties, 1 loss across 40 instances. The parallel speedup from
+Phase 5 translates directly into algorithmic quality: more BRKGA
+generations within the same 30 s budget produce slightly tighter
+packings. BR1 is fully saturated (the algorithm hits the same answer
+regardless of extra generations) so it ties exactly with v3.8; BR3/5/7
+see consistent small gains from the extra polish.
+
+> **Phase 6d caveat.** The first BR n=10 run uncovered an algorithm-
+> quality regression in Phase 5c's batch dispatcher: mode 5 with top-K
+> (the v3.8 enhancement) was silently downgraded to mode 4 because per-
+> chromosome top-K resolution wasn't implemented in any batch entry.
+> Cost was ~7 pp on average across the BR n=10 benchmark. Commit
+> `5247082` adds `decode_batch_precomputed_blocks_per_chrom` which
+> pre-resolves each chromosome's chosen block outside nogil and
+> prange-dispatches through `_precomputed_blocks_loop` per-chrom. The
+> numbers above are post-fix.
+
+### 7.2 Comparison vs literature SOTA
+
+BR1 mean util at 30 s budget:
 
 | System | Mean util₁ | Reference |
 |---|---:|---|
 | Gonçalves-Resende 2013 | 92.62 % | Literature SOTA |
-| v3.12 (pre-port) | 91.04 % | (gap −1.58 pp) |
-| **v3.12 + Cython port (this report)** | _see results section below_ | _(running)_ |
+| v3.12 (pre-port) | 91.03 % | (gap −1.59 pp) |
+| **v3.12 + Cython port** | **91.03 %** | (gap −1.59 pp) |
 
-> A full BR n=10 at the canonical 30 s budget is currently running in
-> the background; numbers will be appended when it completes. The
-> expected gain from Phase 5 is bounded by how much extra polish the
-> extra generations buy — early indications from BR3 suggest ~0.5–1 pp
-> improvement on heavier instances.
+The BR1 gap doesn't close — BR1 is the easiest set and the algorithm
+saturates at 91.03 % regardless of extra generations. The literature's
+extra 1.59 pp likely comes from algorithmic improvements (smarter
+seeding, smarter polish) rather than from raw decode throughput.
+Closing this gap is a future-work item; the port did not regress it.
+
+BR3/5/7 see consistent small gains, suggesting the harder sets benefit
+from the additional generations. The combined trend is favourable:
+
+| Set | pre-port mean | port mean | Δ |
+|---|---:|---:|---:|
+| BR3 | 93.35 % | 93.56 % | +0.21 pp |
+| BR5 | 92.59 % | 92.92 % | +0.33 pp |
+| BR7 | 92.50 % | 92.96 % | +0.46 pp |
 
 Industry workloads (15 s/pallet, post-Phase-5):
 
