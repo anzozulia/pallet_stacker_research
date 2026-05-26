@@ -218,6 +218,51 @@ This shifts the highest-leverage fix from "more BRKGA time" to:
 
 These are now the priority experiments.
 
+### 4.6 Diversification test results
+
+5 BR1 instances × 5 configs at 30 s budget each:
+
+| Instance | base | r=2 | r=3 | no-v2 | r2+LNS | best Δ |
+|---|---:|---:|---:|---:|---:|---:|
+| BR1#1 | 91.05 | **92.02** | **92.02** | 91.18 | **92.02** | +0.97 |
+| BR1#2 | 91.36 | 91.36 | 91.36 | **92.62** | 91.36 | **+1.26** |
+| BR1#3 | 88.11 | 88.11 | 88.11 | 88.11 | 88.11 | +0.00 |
+| BR1#4 | 86.91 | 86.91 | 86.91 | 86.83 | 86.91 | +0.00 |
+| BR1#5 | 94.61 | 94.63 | 94.63 | 94.63 | 94.63 | +0.02 |
+
+Per-config mean across 5 BR1 instances:
+- base: 90.41 %
+- r=2 : 90.61 % (+0.19)
+- r=3 : 90.61 % (+0.19)
+- no-v2: 90.67 % (+0.27)
+- r2+LNS: 90.61 % (+0.19)
+- **best-per-instance** (oracle): 90.86 % (**+0.45**)
+
+### 4.7 Conclusions
+
+1. **No single config dominates.** BR1#1 wants `n_restarts=2`; BR1#2
+   wants `no v2 seed`. Different instances live in different basins.
+
+2. **BR1#3 and BR1#4 are hard-stuck.** None of the diversification
+   strategies help. Likely needs block-aware LS, different decoder
+   modes, or has a true structural ceiling.
+
+3. **Multi-strategy within a single run is the right next step.** Use
+   the existing K=3 multi-population to assign different seeding
+   strategies per population:
+   - pop 0: v2 seed + smart init (current)
+   - pop 1: no v2 seed, random init only
+   - pop 2: alternative (e.g. layer-mode-biased smart init)
+
+   Reduce migration_interval so populations stay independent longer.
+
+4. **Realistic gap closure**: +0.4–0.6 pp from diversification + multi-
+   strategy populations alone. To close the full 1.59 pp, also need:
+   - Block-aware LS operator for BR1#3/#4-type hard instances
+   - Possibly layer-decoder bias (G&R 2013 used layer decoders only)
+
+A focused implementation plan is now warranted (next document).
+
 ---
 
 ## 5. Open questions
