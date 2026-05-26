@@ -77,7 +77,13 @@ def brkga_pack_v35(
     # v3.5 features
     use_multi_decoder: bool = True,
     n_modes: int = 6,  # 6 = DFTRC + wall + corner + layer + DFTRC+blocks + precomp-blocks
-    use_v2_seed: bool = True,
+    # Default behavior is "auto" (None): v2 seed used iff the workload has
+    # finite constraints. Reasoning: v2 seed gives an immediately feasible
+    # baseline that helps the constraint path enormously (industry IND2:
+    # 0 unp with v2 → 144 unp without), but on pure-geometric BR it traps
+    # BRKGA in the v2 basin and forfeits better exploration (BR1#8: 96.4%
+    # without v2 → 94.3% with v2). Explicit True/False overrides.
+    use_v2_seed: Optional[bool] = None,
     use_smart_init: bool = True,
     use_local_search: bool = True,
     local_search_budget_s: float = 4.0,
@@ -109,6 +115,13 @@ def brkga_pack_v35(
     verbose: bool = False,
 ) -> PackResult:
     """v3.5: hybrid BRKGA with all quality improvements."""
+    # Resolve the use_v2_seed auto-default before any branch. v2 seed gives
+    # a feasible-and-anchored baseline that's worth its slow runtime on
+    # constrained workloads but actively traps BRKGA in a suboptimal basin
+    # on pure-geometric ones. Peek at the constraints (cheap) to decide.
+    if use_v2_seed is None:
+        _, _, _, _, _has_cstr = precompute_constraint_arrays(boxes, pallet)
+        use_v2_seed = bool(_has_cstr)
     # If multi-restart, recurse into single-run with split budget.
     if n_restarts > 1:
         time_per = time_limit_s / n_restarts

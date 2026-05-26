@@ -329,6 +329,58 @@ experiments. **Recommended priority order**:
 
 ---
 
+## 7. Industry workload check — v2 seed IS critical for constraints
+
+Before committing any default change, ran an A/B with `use_v2_seed=True`
+vs `False` across all 10 industry workloads:
+
+| Case | With v2 | Without v2 |
+|---|---|---|
+| IND1 E-commerce | 4 p 24 unp u₁=88.6 % | 4 p 24 unp u₁=88.6 % |
+| **IND2 Pharma all-fragile** | **4 p 0 unp** u₁=6.4 % | **4 p 144 unp** u₁=2.4 % |
+| IND3 Furniture | 4 p 4 unp u₁=55.7 % | 4 p 6 unp u₁=55.7 % |
+| IND4 Beverage | 1 p 0 unp u₁=69.2 % | 1 p 0 unp u₁=69.2 % |
+| IND5 Retail 4-SKU | 2 p 0 unp u₁=92.9 % | 2 p 0 unp u₁=92.9 % |
+| IND6 LTL groupage | 1 p 0 unp u₁=39.2 % | 1 p 0 unp u₁=39.2 % |
+| IND7 Electronics | 4 p 13 unp u₁=48.2 % | 4 p 16 unp u₁=48.0 % |
+| **IND8 Automotive heavy** | **3 p 0 unp** u₁=55.2 % | **4 p 1 unp** u₁=54.9 % |
+| IND9 Document | 2 p 0 unp u₁=85.5 % | 2 p 0 unp u₁=85.5 % |
+| IND10 Cold-chain | 2 p 0 unp u₁=95.4 % | 2 p 0 unp u₁=95.4 % |
+
+**Catastrophic regression on IND2** (0 → 144 unpacked) and meaningful
+regression on IND8 (3 → 4 pallets, 0 → 1 unpacked). The v2 seed is the
+anchor that makes the constraint path find any feasible packing at all
+for tight workloads.
+
+**Conclusion**: cannot globally disable v2 seed. Need a smart default:
+v2 seed for constrained workloads, no v2 seed for geometric/BR.
+
+## 8. Implementation: conditional v2_seed default
+
+`use_v2_seed: Optional[bool] = None` — auto-decides based on
+`has_constraints`:
+
+```python
+# In brkga_pack_v35, before any branch:
+if use_v2_seed is None:
+    _, _, _, _, _has_cstr = precompute_constraint_arrays(boxes, pallet)
+    use_v2_seed = bool(_has_cstr)
+```
+
+- Geometric/BR (`has_constraints=False`) → v2 seed SKIPPED → best
+  exploration, +0.34 pp BR1 mean
+- Constrained/industry (`has_constraints=True`) → v2 seed USED → IND2
+  preserved at 4 p / 0 unp / 0 errs
+- Explicit `use_v2_seed=True/False` overrides the auto-decision
+
+Backwards compatibility: callers that previously didn't pass
+`use_v2_seed` get the smart auto behavior. Callers that explicitly
+passed `True` (or `False`) keep the old behavior.
+
+This is the first shippable gap-closing change.
+
+---
+
 ## 5. Open questions
 
 - Is the literature's 92.62 % at 30 s budget or longer? Original 2013
