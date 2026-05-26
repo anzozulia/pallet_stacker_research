@@ -51,16 +51,19 @@ except ImportError:
 # Phase 4 — constraint-aware decoders. Try Cython first; fall back to
 # Numba reference when the .so isn't present.
 #   Phase 4b — decode_njit_mode_cstr (cstr modes 0/1/2)
-#   Phase 4c will add decode_blocks_njit_mode_cstr (cstr mode 4)
-#   Phase 4d will add decode_layer_njit_cstr      (cstr mode 3)
+#   Phase 4c — decode_blocks_njit_mode_cstr (cstr mode 4)
+#   Phase 4d will add decode_layer_njit_cstr (cstr mode 3)
 try:
-    from .jit_decoders_cstr_cy import decode_njit_mode_cstr  # noqa: F401
+    from .jit_decoders_cstr_cy import (  # noqa: F401
+        decode_njit_mode_cstr,
+        decode_blocks_njit_mode_cstr,
+    )
 except ImportError:
-    from .jit_decoders_cstr import decode_njit_mode_cstr  # noqa: F401
-from .jit_decoders_cstr import (
-    decode_blocks_njit_mode_cstr,
-    decode_layer_njit_cstr,
-)
+    from .jit_decoders_cstr import (  # noqa: F401
+        decode_njit_mode_cstr,
+        decode_blocks_njit_mode_cstr,
+    )
+from .jit_decoders_cstr import decode_layer_njit_cstr
 
 
 # Module-level flag — set to True after the first warmup_jit() call so
