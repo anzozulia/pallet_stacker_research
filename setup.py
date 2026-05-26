@@ -99,7 +99,7 @@ EXTENSION_MODULES = [
         extra_compile_args=EXTRA_COMPILE_ARGS,
         extra_link_args=EXTRA_LINK_ARGS,
     ),
-    # Phase 3a: geometric decoders (decode_njit_mode for modes 0/1/2).
+    # Phase 3a/b/c/d: geometric decoders (all 4 entry points).
     # Calls Cython primitives + v3fast helpers via cdef nogil interface.
     Extension(
         name="pallet_packer._brkga_core.jit_decoders_geom_cy",
@@ -108,7 +108,16 @@ EXTENSION_MODULES = [
         extra_compile_args=EXTRA_COMPILE_ARGS,
         extra_link_args=EXTRA_LINK_ARGS,
     ),
-    # Future: Extension("pallet_packer._brkga_core.jit_decoders_cstr_cy", ...),
+    # Phase 4: constraint-aware decoders (cstr modes 0/1/2/3/4). Cimports
+    # the helpers from jit_constraints_cy + jit_primitives_cy +
+    # v3fast_cy + jit_decoders_geom_cy.
+    Extension(
+        name="pallet_packer._brkga_core.jit_decoders_cstr_cy",
+        sources=[str(SRC / "jit_decoders_cstr_cy.pyx")],
+        include_dirs=[np.get_include()],
+        extra_compile_args=EXTRA_COMPILE_ARGS,
+        extra_link_args=EXTRA_LINK_ARGS,
+    ),
 ]
 
 
