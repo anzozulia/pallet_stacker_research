@@ -7,10 +7,10 @@ resume; the "Resume here" section at the bottom is the next action.
 
 ## 1. Where we are right now
 
-**Phase 3 + Phase 4 complete. The entire BRKGA hot path runs through
-Cython.** End-to-end BR1#1 = 91.05% / BR3#1 = 94.02% / IND2 = 4p 0unp
-0errs / IND9 = u1=85.5% / IND10 = u1=95.4% — all bit-identical to the
-v3.12 baseline.
+**Phase 3 + Phase 4 + Phase 5 complete. The entire BRKGA hot path is
+Cython AND parallel.** End-to-end BR1#1 = 91.05% / BR3#1 = 94.02% /
+IND2 = 4p 0unp 0errs / IND9 = u1=85.5% / IND10 = u1=95.4% — all
+bit-identical to the v3.12 baseline.
 
 | Decoder | Numba | Cython | Speedup |
 |---|---|---|---|
@@ -44,6 +44,9 @@ db95105  Phase 3c: decode_blocks_njit_mode (mode 4) LIVE
 8f496f8  Phase 4b: decode_njit_mode_cstr (cstr 0/1/2) LIVE
 4bc96ba  Phase 4c: decode_blocks_njit_mode_cstr (cstr 4) LIVE
 5a0664b  Phase 4d: decode_layer_njit_cstr      (cstr 3) LIVE
+03b54ca  Phase 5a: decode_batch_njit_mode prange (7.85× per-call)
+4c799d9  Phase 5b: batch entries for all remaining decoders
+555158f  Phase 5c: driver.py uses decode_population_fitness
 ```
 
 ---
@@ -353,78 +356,64 @@ random BPS orderings + same dims, assert `placements_out` arrays are
 
 ## 9. RESUME HERE
 
-**Next action: Phase 5 — `prange` parallel population evaluation.**
+**Next action: Phase 6 — end-to-end final eval + report.**
 
-The single-thread Cython port is done; per-decode speedups are modest
-(1.1–1.7×) because the inner loops are already cache-friendly C code.
-The real multiplier is multi-core: Cython `cython.parallel.prange` can
-dispatch each chromosome's decode to a different thread, since
-`_commit_ems` and the decoders are all `noexcept nogil`. On an 8-core
-M-series CPU we expect 4–8× linear scaling for embarrassingly parallel
-population evaluation.
+The port is functionally complete:
+- Cython for every decoder (Phase 3 + 4).
+- Parallel batch decode wired into the BRKGA inner loop (Phase 5).
+- All canonical seeds bit-identical to v3.12 baseline.
 
-### Plan
+What remains is measuring the actual end-to-end wall-clock gain and
+documenting where the algorithm stands vs the literature.
 
-1. **Add a batch-decode entry point** (`jit_decoders_geom_cy.pyx` and/or
-   `jit_decoders_cstr_cy.pyx`). Signature roughly:
-   ```cython
-   cpdef void decode_batch_geom(
-       const double[:, ::1] chromosomes,   # (pop_size, chrom_len)
-       const i64[::1] n_rots_per_box,
-       const i64[:, :, ::1] dims_all,
-       i64 L, i64 W, i64 H,
-       i64 max_pallets, int mode,
-       i64[:, :, ::1] placements_out_all,  # (pop_size, n, 6)
-       i64[::1] n_bins_out,                # (pop_size,)
-   ):
-       cdef Py_ssize_t i
-       for i in prange(pop_size, nogil=True, schedule='static'):
-           # decode chromosomes[i] into placements_out_all[i]
-           ...
-   ```
+### Suggested tasks for Phase 6
 
-2. **Determinism contract** — must remain byte-identical to the sequential
-   path at fixed seed:
-   - Pre-allocate one set of scratch arrays per thread (not per call).
-     The easiest way is `cython.parallel.threadid()` to index into a
-     `(n_threads, MAX_BINS, MAX_EMS_C, 2, 3)` scratch.
-   - No work-stealing — use `schedule='static'` so chromosome i always
-     lands on the same thread for a given pop_size, regardless of run.
-   - The sort `np.argsort(bps)` must run outside the nogil region (it's
-     numpy/Python). One option: move the argsort into the wrapper and
-     pass `order` as `const i64[:, ::1]` of shape `(pop_size, n)`.
+1. **Wall-clock benchmark**:
+   - Re-run `make br-smoke` with verbose timing; compare generations/sec
+     to a baseline checkout pre-Phase-5 (`git stash` the driver change
+     or check out 5a4e6e8). Expect 2-5× more generations in the same
+     30s budget on multi-core machines.
+   - Re-run `scripts/run_v310_industry_eval.py` at 30s budget per pallet
+     for a side-by-side time vs quality comparison.
 
-3. **Driver integration** (`driver.py`):
-   - Replace the per-individual `decode_chromosome` loop in the BRKGA
-     evolution step with a single `decode_batch_*` call. Wrap fitness
-     extraction (count unpacked + util) in a vectorised post-pass.
-   - Both geometric and constraint-aware paths get their own batch
-     entry, picked by `cstr_active` flag in `decode_chromosome`.
+2. **Full BR n=10 at the canonical 30s budget**:
+   - `python scripts/run_v310_br_regression.py --n 10 --time 30 \
+        --sets thpack1 thpack2 thpack3 thpack4 thpack5 thpack6 thpack7`
+   - Compare against Gonçalves-Resende 2013 SOTA on BR1 (~92.62%, our
+     pre-Phase-5 mean was 91.04%). The extra generations from parallel
+     pop eval should close some of the gap.
 
-4. **Validation**:
-   - `make br-smoke` must still produce BR1#1=91.05% / BR3#1=94.02%.
-   - `make industry-smoke` must still produce IND2=4p/0unp/0errs etc.
-   - Wall-clock should drop by ~`n_cores` × the per-call Python overhead
-     savings on an 8-core machine.
+3. **Industry workloads at production budget**:
+   - 30s/pallet across IND1-10, full n=10 seeds per case. Report
+     unpacked count, pallet count, per-constraint error count, u1/utT.
 
-5. **Benchmark** (new script `scripts/bench_batch_decode.py`):
-   - Time `decode_chromosome` × pop_size vs `decode_batch_*` on one
-     pop_size=80 population.
-   - Report scaling for thread counts 1..n_cores.
+4. **Profile any unexpected bottleneck**:
+   - `python -m cProfile -o pr.out scripts/run_v310_br_regression.py ...`
+   - `snakeviz pr.out` to find what's left to optimise. Likely
+     candidates: the v2-seed PalletPacker (still pure Python), local
+     search polish, path relinking inner loop.
 
-6. **Commit** each step separately:
-   - `Phase 5a (parallel): decode_batch_geom prange entry point`
-   - `Phase 5b (parallel): decode_batch_cstr prange entry point`
-   - `Phase 5c (parallel): driver.py integration`
+5. **Write `docs/reports/27_port_complete.md`** with:
+   - Architecture summary (Cython + prange + Docker pipeline)
+   - Per-phase commit log and per-decoder speedup table (from Section 1)
+   - Final BR results vs literature
+   - Final industry results
+   - Known limitations + suggested follow-ons (polish polish parallel,
+     v2 packer port if needed)
 
-### After Phase 5 → Phase 6
+### Possible follow-ons (post Phase 6)
 
-The final phase is end-to-end re-eval against the literature baselines:
-- Full BR n=10 at the canonical 30s budget per instance.
-- Compare against Gonçalves-Resende 2013 SOTA on BR1 (target: close
-  the 1.57pp gap).
-- Industry-grade workloads at production-realistic budgets.
-- Write `docs/reports/27_port_complete.md` with final numbers.
+These are all OPTIONAL — the port is production-ready as it stands.
+
+- **Per-thread scratch reuse**: each call to a `decode_batch_*` entry
+  allocates ~MAX_BINS × MAX_EMS_C × pop_size × 48 bytes of int64. For
+  pop_size=80 and max_pallets=8 that's ~16 MB per generation, which
+  shows up in profile. Stash the scratch in a thread-local cache and
+  zero it instead of reallocating; ~10-15 ms saved per generation.
+- **prange the polish step**: local-search 2-opt evaluates many
+  neighbours sequentially. Can run in parallel.
+- **JIT vs AOT path-relinking**: PR re-decodes ~50 intermediate
+  chromosomes per call. Wrap in a batch entry.
 
 ---
 
