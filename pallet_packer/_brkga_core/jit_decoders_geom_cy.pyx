@@ -20,6 +20,7 @@ inner loop runs nogil — no Python boundary, no tuple boxing.
 """
 import numpy as np
 cimport numpy as cnp
+from cython.parallel cimport prange
 # i64 + int64_t come from the companion jit_decoders_geom_cy.pxd
 
 from .v3fast_cy cimport _find_best_dftrc, _commit_ems, MAX_EMS_C
@@ -1050,3 +1051,67 @@ cdef i64 _precomputed_blocks_loop(
         bin_ems_count[best_bin] = new_count
 
     return n_bins
+
+
+# ===========================================================================
+# Phase 5a: batch decode for modes 0/1/2 via cython.parallel.prange.
+#
+# Each chromosome in the population is decoded independently → embarrassingly
+# parallel. Per-chromosome scratch arrays are pre-allocated (one set per
+# chromosome) so the inner loop runs nogil without threadid-based fan-out.
+# `schedule='static'` makes chromosome i always land on the same thread for a
+# given pop_size → bit-identical regardless of thread count.
+# ===========================================================================
+
+
+def decode_batch_njit_mode(
+    chromosomes,         # (pop_size, chrom_len) double — only [:, :n] used
+    n_rots_per_box,      # (n_boxes,) int64
+    dims_all,            # (n_boxes, n_rots_max, 3) int64
+    L, W, H,
+    max_pallets,
+    mode,                # 0=DFTRC, 1=wall, 2=corner — uniform across batch
+    placements_out_all,  # (pop_size, n_boxes, 6) int64
+    n_bins_out,          # (pop_size,) int64
+):
+    """Batch-decode pop_size chromosomes with modes 0/1/2 in parallel.
+
+    Bit-identical to running decode_njit_mode serially for each chromosome.
+    Wrapper does the per-chromosome BPS argsort (numpy/Python) up front;
+    the parallel prange dispatches the nogil decode loops.
+    """
+    cdef Py_ssize_t pop_size = chromosomes.shape[0]
+    cdef i64 n_boxes = n_rots_per_box.shape[0]
+    cdef int cmode = mode
+    cdef i64 cL = L, cW = W, cH = H
+    cdef i64 MAX_BINS = max_pallets if max_pallets > 0 else 32
+
+    # Per-chromosome BPS argsort. Numpy is GIL-bound; do it once up front.
+    bps = np.ascontiguousarray(chromosomes)[:, :n_boxes]
+    orders_np = np.argsort(bps, axis=1).astype(np.int64)
+    cdef const i64[:, ::1] orders = orders_np
+    cdef const i64[::1] nr_v = n_rots_per_box
+    cdef const i64[:, :, ::1] da_v = dims_all
+    cdef i64[:, :, ::1] po_all = placements_out_all
+    cdef i64[::1] nb_out = n_bins_out
+
+    # Per-chromosome scratch — one slot per chromosome means no thread-id
+    # fan-out is needed; each prange iteration writes only into its own slot.
+    cdef i64[:, :, :, :, ::1] be_all = np.zeros(
+        (pop_size, MAX_BINS, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef i64[:, ::1] bec_all = np.zeros((pop_size, MAX_BINS), dtype=np.int64)
+    cdef i64[:, :, :, ::1] sc_all = np.zeros(
+        (pop_size, MAX_EMS_C, 2, 3), dtype=np.int64)
+
+    cdef Py_ssize_t i
+    with nogil:
+        for i in prange(pop_size, schedule='static'):
+            # Cython 3.x: indexing contiguous memoryviews returns a sub-view
+            # without acquiring GIL. _decode_loop already takes per-call
+            # scratch + placements, so each chromosome's slot is independent.
+            nb_out[i] = _decode_loop(
+                orders[i], nr_v, da_v, cL, cW, cH, MAX_BINS,
+                po_all[i], cmode,
+                be_all[i], bec_all[i], sc_all[i], n_boxes,
+            )
+    return n_bins_out

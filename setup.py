@@ -54,6 +54,13 @@ SRC = Path("pallet_packer/_brkga_core")
 EXTRA_COMPILE_ARGS = ["-O3", "-ffast-math", "-march=native"]
 EXTRA_LINK_ARGS: list[str] = []
 
+# OpenMP flags — applied only to extensions that use cython.parallel.prange
+# (Phase 5: batch decoders). On Linux/macOS GCC this is -fopenmp for both
+# compile and link. On clang/Apple it would be -fopenmp + -lomp; we always
+# build inside Docker (debian-based GCC), so just -fopenmp.
+OPENMP_COMPILE_ARGS = EXTRA_COMPILE_ARGS + ["-fopenmp"]
+OPENMP_LINK_ARGS = EXTRA_LINK_ARGS + ["-fopenmp"]
+
 COMPILER_DIRECTIVES = {
     "boundscheck": False,
     "wraparound": False,
@@ -100,23 +107,23 @@ EXTENSION_MODULES = [
         extra_link_args=EXTRA_LINK_ARGS,
     ),
     # Phase 3a/b/c/d: geometric decoders (all 4 entry points).
-    # Calls Cython primitives + v3fast helpers via cdef nogil interface.
+    # Phase 5: batch decoders use cython.parallel.prange → OpenMP flags.
     Extension(
         name="pallet_packer._brkga_core.jit_decoders_geom_cy",
         sources=[str(SRC / "jit_decoders_geom_cy.pyx")],
         include_dirs=[np.get_include()],
-        extra_compile_args=EXTRA_COMPILE_ARGS,
-        extra_link_args=EXTRA_LINK_ARGS,
+        extra_compile_args=OPENMP_COMPILE_ARGS,
+        extra_link_args=OPENMP_LINK_ARGS,
     ),
     # Phase 4: constraint-aware decoders (cstr modes 0/1/2/3/4). Cimports
     # the helpers from jit_constraints_cy + jit_primitives_cy +
-    # v3fast_cy + jit_decoders_geom_cy.
+    # v3fast_cy + jit_decoders_geom_cy. Same OpenMP flags for Phase 5b.
     Extension(
         name="pallet_packer._brkga_core.jit_decoders_cstr_cy",
         sources=[str(SRC / "jit_decoders_cstr_cy.pyx")],
         include_dirs=[np.get_include()],
-        extra_compile_args=EXTRA_COMPILE_ARGS,
-        extra_link_args=EXTRA_LINK_ARGS,
+        extra_compile_args=OPENMP_COMPILE_ARGS,
+        extra_link_args=OPENMP_LINK_ARGS,
     ),
 ]
 
