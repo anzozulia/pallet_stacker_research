@@ -8,8 +8,9 @@ results to the v3.12 Numba baseline.
 
 > **Headline numbers.** End-to-end throughput **2.6×–5.3× higher** at
 > the same time budget. Algorithmic quality not just preserved — BR
-> mean util across 40 instances is **+0.25 pp** vs v3.12 baseline
-> (17 wins / 22 ties / 1 loss); BR7 alone gains +0.46 pp on average.
+> mean util across 40 instances is **+0.46 pp** vs v3.12 baseline
+> (22 wins / 12 ties / 6 losses); BR1 mean closes 21 % of the
+> Gonçalves-Resende 2013 SOTA gap (91.03 % → 91.37 %, gap −1.25 pp).
 > All canonical anchors (BR1#1=91.05 %, BR3#1=94.02 %, IND2 = 4 p /
 > 0 unp / 0 errs, IND9 = 85.5 %, IND10 = 95.4 %) match exactly.
 
@@ -99,6 +100,7 @@ toolchain (e.g. raw checkout on a fresh Python install).
 | `ed7a35e` | 6a | Wall-clock benchmark — 2.63 ×-5.27 × decodes/sec measured |
 | `2278104` | 6c | This report |
 | `5247082` | 6d | Critical fix: per-chromosome top-K block resolution in batch |
+| `66f081d` | 7a | Conditional v2-seed default — closes 0.34 pp BR SOTA gap |
 
 Every commit was gated on:
 
@@ -242,13 +244,21 @@ BR1 mean util at 30 s budget:
 |---|---:|---|
 | Gonçalves-Resende 2013 | 92.62 % | Literature SOTA |
 | v3.12 (pre-port) | 91.03 % | (gap −1.59 pp) |
-| **v3.12 + Cython port** | **91.03 %** | (gap −1.59 pp) |
+| v3.12 + Cython port (Phase 5) | 91.03 % | (gap −1.59 pp — no gain on BR1) |
+| **+ conditional v2-seed default (Phase 7a)** | **91.37 %** | (gap −1.25 pp, closed 21 %) |
 
-The BR1 gap doesn't close — BR1 is the easiest set and the algorithm
-saturates at 91.03 % regardless of extra generations. The literature's
-extra 1.59 pp likely comes from algorithmic improvements (smarter
-seeding, smarter polish) rather than from raw decode throughput.
-Closing this gap is a future-work item; the port did not regress it.
+The Phase 7a fix landed `use_v2_seed=Optional[bool]=None` as a
+conditional auto-default: skip v2 seed for geometric workloads (BR),
+use v2 seed for constrained workloads (industry). This closed 21 %
+of the SOTA gap. See `docs/reports/28_br1_gap_analysis.md` for the
+full diagnostic — `v2 seed actively poisoned` 2 of 10 BR1 instances
+(BR1#2 +1.26 pp, BR1#8 +2.06 pp when removed), while remaining
+essential for industry IND2 (preserves 0 unpacked instead of 144).
+
+Remaining gap is concentrated on hard-stuck instances (BR1#3, #4, #6,
+#7, #9, #10) that don't respond to any tested diversification
+strategy. Closing further likely requires block-aware LS or layer-
+mode-biased decoder mix — see Section 8 below.
 
 BR3/5/7 see consistent small gains, suggesting the harder sets benefit
 from the additional generations. The combined trend is favourable:
