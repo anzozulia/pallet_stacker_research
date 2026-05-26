@@ -8,7 +8,10 @@ constraint-aware decoders.
 Phase 4b (this file): decode_njit_mode_cstr (cstr modes 0/1/2).
 Phase 4c (this file): decode_blocks_njit_mode_cstr (cstr mode 4) +
                       _max_block_under_constraints + _commit_block_placements.
-Phase 4d will add decode_layer_njit_cstr   (cstr mode 3) here.
+Phase 4d (this file): decode_layer_njit_cstr (cstr mode 3 — Bischoff-Ratcliff
+                      layers under constraints).
+
+ALL constraint-aware decoders now Cython. Phase 4 complete.
 
 All inner loops are nogil. Constraint helpers are cimported from
 jit_constraints_cy via .pxd so the feasibility checks + bookkeeping
@@ -818,6 +821,339 @@ cdef i64 _decode_cstr_blocks_loop(
             bin_emss[n_bins, j, 1, 1] = scratch[j, 1, 1]
             bin_emss[n_bins, j, 1, 2] = scratch[j, 1, 2]
         bin_ems_count[n_bins] = new_count
+        n_bins += 1
+
+    return n_bins
+
+
+# ===========================================================================
+# Phase 4d: decode_layer_njit_cstr (cstr mode 3 — Bischoff-Ratcliff layers).
+#
+# Each bin holds a current X-slab [slab_min, slab_max]. The slab depth is
+# set by the first ("seed") box. Subsequent BPS-ordered boxes try to fit in
+# the current slab via _find_best_in_slab; on miss, open a new slab at
+# slab_max_x; on miss-everywhere, open a new bin. Per-placement enforces
+# pallet weight cap + load_on_top + cog (when active).
+# ===========================================================================
+
+
+def decode_layer_njit_cstr(
+    bps_order, n_rots_per_box, dims_all,
+    L, W, H, max_pallets, placements_out,
+    weights, mlot, rfs, pallet_max_weight, support_ratio,
+    require_centroid,
+    cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+    cog_min_load_frac, cog_active,
+):
+    """Cython implementation of decode_layer_njit_cstr (cstr mode 3)."""
+    cdef i64 cL = L, cW = W, cH = H
+    cdef i64 MAX_BINS = max_pallets if max_pallets > 0 else 32
+    cdef double pmw = pallet_max_weight
+    cdef double sr = support_ratio
+    cdef int rc = require_centroid
+    cdef double cxmn = cog_x_min, cxmx = cog_x_max
+    cdef double cymn = cog_y_min, cymx = cog_y_max
+    cdef double cmlf = cog_min_load_frac
+    cdef int cact = cog_active
+
+    cdef i64[:, :, :, ::1] bin_emss = np.zeros(
+        (MAX_BINS, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef i64[::1] bin_ems_count = np.zeros(MAX_BINS, dtype=np.int64)
+    cdef i64[::1] bin_slab_min_x = np.zeros(MAX_BINS, dtype=np.int64)
+    cdef i64[::1] bin_slab_max_x = np.zeros(MAX_BINS, dtype=np.int64)
+    cdef i64[:, :, ::1] scratch = np.zeros((MAX_EMS_C, 2, 3), dtype=np.int64)
+
+    cdef const i64[::1] bo_v = bps_order
+    cdef const i64[::1] nr_v = n_rots_per_box
+    cdef const i64[:, :, ::1] da_v = dims_all
+    cdef i64[:, ::1] po_v = placements_out
+
+    cdef const double[::1] w_v = weights
+    cdef const double[::1] mlot_v = mlot
+    cdef const i64[::1] rfs_v = rfs
+
+    cdef i64 n = bo_v.shape[0]
+    cdef double[::1] pal_w = np.zeros(MAX_BINS, dtype=np.float64)
+    cdef double[::1] ptl = np.zeros(n, dtype=np.float64)
+    cdef double[::1] psx = np.zeros(MAX_BINS, dtype=np.float64)
+    cdef double[::1] psy = np.zeros(MAX_BINS, dtype=np.float64)
+
+    return _decode_cstr_layer_loop(
+        bo_v, nr_v, da_v, cL, cW, cH, MAX_BINS, po_v,
+        bin_emss, bin_ems_count, bin_slab_min_x, bin_slab_max_x, scratch,
+        w_v, mlot_v, rfs_v, pmw, sr, rc,
+        cxmn, cxmx, cymn, cymx, cmlf, cact,
+        pal_w, ptl, psx, psy, n,
+    )
+
+
+cdef i64 _decode_cstr_layer_loop(
+    const i64[::1] bps_order,
+    const i64[::1] n_rots_per_box,
+    const i64[:, :, ::1] dims_all,
+    i64 L, i64 W, i64 H,
+    i64 MAX_BINS,
+    i64[:, ::1] placements_out,
+    i64[:, :, :, ::1] bin_emss,
+    i64[::1] bin_ems_count,
+    i64[::1] bin_slab_min_x,
+    i64[::1] bin_slab_max_x,
+    i64[:, :, ::1] scratch,
+    const double[::1] weights,
+    const double[::1] mlot,
+    const i64[::1] rfs,
+    double pallet_max_weight,
+    double support_ratio,
+    int require_centroid,
+    double cog_x_min, double cog_x_max,
+    double cog_y_min, double cog_y_max,
+    double cog_min_load_frac,
+    int cog_active,
+    double[::1] pallet_weights,
+    double[::1] placement_top_loads,
+    double[::1] pallet_sum_xw,
+    double[::1] pallet_sum_yw,
+    i64 n,
+) noexcept nogil:
+    """All-nogil cstr mode 3 inner driver."""
+    cdef i64 n_bins = 0
+    cdef i64 i, b, r, j, box_idx, n_rots
+    cdef i64 dx, dy, dz
+    cdef i64 idx, x, y, z, yz
+    cdef i64 bin_best_rot, bin_best_yz
+    cdef i64 bin_best_x, bin_best_y, bin_best_z
+    cdef i64 new_slab_start, new_best_rot, new_best_yz, new_best_y, new_best_z, new_best_dx
+    cdef i64 seed_rot, seed_yz, seed_y, seed_z
+    cdef i64 new_count
+    cdef double cand_weight
+    cdef bint placed
+    cdef bint cog_ok
+
+    for i in range(n):
+        box_idx = bps_order[i]
+        n_rots = n_rots_per_box[box_idx]
+        cand_weight = weights[box_idx]
+        placed = False
+
+        for b in range(n_bins):
+            if pallet_weights[b] + cand_weight > pallet_max_weight + 1e-6:
+                continue
+
+            # Phase 1: try current slab.
+            bin_best_rot = -1
+            bin_best_yz = -1
+            bin_best_x = 0
+            bin_best_y = 0
+            bin_best_z = 0
+            for r in range(n_rots):
+                dx = dims_all[box_idx, r, 0]
+                dy = dims_all[box_idx, r, 1]
+                dz = dims_all[box_idx, r, 2]
+                _find_best_in_slab(
+                    bin_emss[b], bin_ems_count[b],
+                    dx, dy, dz, L, W, H,
+                    bin_slab_min_x[b], bin_slab_max_x[b],
+                    &idx, &x, &y, &z)
+                if idx < 0:
+                    continue
+                yz = ((W - y - dy) * (W - y - dy)
+                      + (H - z - dz) * (H - z - dz))
+                if yz > bin_best_yz:
+                    bin_best_yz = yz
+                    bin_best_rot = r
+                    bin_best_x = x; bin_best_y = y; bin_best_z = z
+            if bin_best_rot >= 0:
+                dx = dims_all[box_idx, bin_best_rot, 0]
+                dy = dims_all[box_idx, bin_best_rot, 1]
+                dz = dims_all[box_idx, bin_best_rot, 2]
+                cog_ok = True
+                if cog_active != 0:
+                    cog_ok = _ck_cog_envelope(
+                        bin_best_x, bin_best_y, dx, dy,
+                        cand_weight, b,
+                        pallet_weights, pallet_sum_xw, pallet_sum_yw,
+                        pallet_max_weight,
+                        cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+                        cog_min_load_frac)
+                if cog_ok and _ck_load_on_top(
+                        placements_out, dims_all, bps_order, mlot,
+                        placement_top_loads, n,
+                        b, bin_best_x, bin_best_y, bin_best_z,
+                        dx, dy, dz, cand_weight, support_ratio,
+                        require_centroid, <int>rfs[box_idx]):
+                    new_count = _commit_ems(
+                        bin_emss[b], bin_ems_count[b],
+                        bin_best_x, bin_best_y, bin_best_z,
+                        bin_best_x + dx, bin_best_y + dy, bin_best_z + dz,
+                        scratch)
+                    for j in range(new_count):
+                        bin_emss[b, j, 0, 0] = scratch[j, 0, 0]
+                        bin_emss[b, j, 0, 1] = scratch[j, 0, 1]
+                        bin_emss[b, j, 0, 2] = scratch[j, 0, 2]
+                        bin_emss[b, j, 1, 0] = scratch[j, 1, 0]
+                        bin_emss[b, j, 1, 1] = scratch[j, 1, 1]
+                        bin_emss[b, j, 1, 2] = scratch[j, 1, 2]
+                    bin_ems_count[b] = new_count
+                    placements_out[i, 0] = b
+                    placements_out[i, 1] = bin_best_rot
+                    placements_out[i, 2] = bin_best_x
+                    placements_out[i, 3] = bin_best_y
+                    placements_out[i, 4] = bin_best_z
+                    placements_out[i, 5] = 1
+                    pallet_weights[b] += cand_weight
+                    _ap_load_contribution(
+                        placements_out, dims_all, bps_order,
+                        placement_top_loads, n,
+                        b, bin_best_x, bin_best_y, bin_best_z,
+                        dx, dy, dz, cand_weight)
+                    _ap_cog_contribution(
+                        bin_best_x, bin_best_y, dx, dy,
+                        cand_weight, b, pallet_sum_xw, pallet_sum_yw)
+                    placed = True
+                    break
+
+            # Phase 2: open a new slab at slab_max_x in this bin.
+            new_slab_start = bin_slab_max_x[b]
+            new_best_rot = -1
+            new_best_yz = -1
+            new_best_y = 0
+            new_best_z = 0
+            new_best_dx = 0
+            for r in range(n_rots):
+                dx = dims_all[box_idx, r, 0]
+                dy = dims_all[box_idx, r, 1]
+                dz = dims_all[box_idx, r, 2]
+                if new_slab_start + dx > L:
+                    continue
+                _find_best_in_slab(
+                    bin_emss[b], bin_ems_count[b],
+                    dx, dy, dz, L, W, H,
+                    new_slab_start, new_slab_start + dx,
+                    &idx, &x, &y, &z)
+                if idx < 0:
+                    continue
+                yz = ((W - y - dy) * (W - y - dy)
+                      + (H - z - dz) * (H - z - dz))
+                if yz > new_best_yz:
+                    new_best_yz = yz
+                    new_best_rot = r
+                    new_best_y = y; new_best_z = z
+                    new_best_dx = dx
+            if new_best_rot >= 0:
+                r = new_best_rot
+                dx = dims_all[box_idx, r, 0]
+                dy = dims_all[box_idx, r, 1]
+                dz = dims_all[box_idx, r, 2]
+                cog_ok = True
+                if cog_active != 0:
+                    cog_ok = _ck_cog_envelope(
+                        new_slab_start, new_best_y, dx, dy,
+                        cand_weight, b,
+                        pallet_weights, pallet_sum_xw, pallet_sum_yw,
+                        pallet_max_weight,
+                        cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+                        cog_min_load_frac)
+                if cog_ok and _ck_load_on_top(
+                        placements_out, dims_all, bps_order, mlot,
+                        placement_top_loads, n,
+                        b, new_slab_start, new_best_y, new_best_z,
+                        dx, dy, dz, cand_weight, support_ratio,
+                        require_centroid, <int>rfs[box_idx]):
+                    new_count = _commit_ems(
+                        bin_emss[b], bin_ems_count[b],
+                        new_slab_start, new_best_y, new_best_z,
+                        new_slab_start + dx, new_best_y + dy, new_best_z + dz,
+                        scratch)
+                    for j in range(new_count):
+                        bin_emss[b, j, 0, 0] = scratch[j, 0, 0]
+                        bin_emss[b, j, 0, 1] = scratch[j, 0, 1]
+                        bin_emss[b, j, 0, 2] = scratch[j, 0, 2]
+                        bin_emss[b, j, 1, 0] = scratch[j, 1, 0]
+                        bin_emss[b, j, 1, 1] = scratch[j, 1, 1]
+                        bin_emss[b, j, 1, 2] = scratch[j, 1, 2]
+                    bin_ems_count[b] = new_count
+                    placements_out[i, 0] = b
+                    placements_out[i, 1] = r
+                    placements_out[i, 2] = new_slab_start
+                    placements_out[i, 3] = new_best_y
+                    placements_out[i, 4] = new_best_z
+                    placements_out[i, 5] = 1
+                    pallet_weights[b] += cand_weight
+                    bin_slab_min_x[b] = new_slab_start
+                    bin_slab_max_x[b] = new_slab_start + dx
+                    _ap_load_contribution(
+                        placements_out, dims_all, bps_order,
+                        placement_top_loads, n,
+                        b, new_slab_start, new_best_y, new_best_z,
+                        dx, dy, dz, cand_weight)
+                    _ap_cog_contribution(
+                        new_slab_start, new_best_y, dx, dy,
+                        cand_weight, b, pallet_sum_xw, pallet_sum_yw)
+                    placed = True
+                    break
+
+        if placed:
+            continue
+
+        # Phase 3: open a new bin (first box is the seed).
+        if n_bins >= MAX_BINS:
+            placements_out[i, 5] = 0
+            continue
+        if cand_weight > pallet_max_weight + 1e-6:
+            placements_out[i, 5] = 0
+            continue
+        bin_emss[n_bins, 0, 0, 0] = 0
+        bin_emss[n_bins, 0, 0, 1] = 0
+        bin_emss[n_bins, 0, 0, 2] = 0
+        bin_emss[n_bins, 0, 1, 0] = L
+        bin_emss[n_bins, 0, 1, 1] = W
+        bin_emss[n_bins, 0, 1, 2] = H
+        bin_ems_count[n_bins] = 1
+        seed_rot = -1
+        seed_yz = -1
+        seed_y = 0
+        seed_z = 0
+        for r in range(n_rots):
+            dx = dims_all[box_idx, r, 0]
+            dy = dims_all[box_idx, r, 1]
+            dz = dims_all[box_idx, r, 2]
+            if dx > L or dy > W or dz > H:
+                continue
+            yz = (W - dy) * (W - dy) + (H - dz) * (H - dz)
+            if yz > seed_yz:
+                seed_yz = yz
+                seed_rot = r
+                seed_y = 0
+                seed_z = 0
+        if seed_rot < 0:
+            placements_out[i, 5] = 0
+            continue
+        dx = dims_all[box_idx, seed_rot, 0]
+        dy = dims_all[box_idx, seed_rot, 1]
+        dz = dims_all[box_idx, seed_rot, 2]
+        new_count = _commit_ems(
+            bin_emss[n_bins], bin_ems_count[n_bins],
+            0, seed_y, seed_z, dx, seed_y + dy, seed_z + dz, scratch)
+        for j in range(new_count):
+            bin_emss[n_bins, j, 0, 0] = scratch[j, 0, 0]
+            bin_emss[n_bins, j, 0, 1] = scratch[j, 0, 1]
+            bin_emss[n_bins, j, 0, 2] = scratch[j, 0, 2]
+            bin_emss[n_bins, j, 1, 0] = scratch[j, 1, 0]
+            bin_emss[n_bins, j, 1, 1] = scratch[j, 1, 1]
+            bin_emss[n_bins, j, 1, 2] = scratch[j, 1, 2]
+        bin_ems_count[n_bins] = new_count
+        placements_out[i, 0] = n_bins
+        placements_out[i, 1] = seed_rot
+        placements_out[i, 2] = 0
+        placements_out[i, 3] = seed_y
+        placements_out[i, 4] = seed_z
+        placements_out[i, 5] = 1
+        bin_slab_min_x[n_bins] = 0
+        bin_slab_max_x[n_bins] = dx
+        pallet_weights[n_bins] += cand_weight
+        _ap_cog_contribution(
+            0, seed_y, dx, dy, cand_weight, n_bins,
+            pallet_sum_xw, pallet_sum_yw)
         n_bins += 1
 
     return n_bins
