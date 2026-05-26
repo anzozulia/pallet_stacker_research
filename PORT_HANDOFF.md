@@ -7,10 +7,13 @@ resume; the "Resume here" section at the bottom is the next action.
 
 ## 1. Where we are right now
 
-**Phase 3 + Phase 4 + Phase 5 complete. The entire BRKGA hot path is
-Cython AND parallel.** End-to-end BR1#1 = 91.05% / BR3#1 = 94.02% /
-IND2 = 4p 0unp 0errs / IND9 = u1=85.5% / IND10 = u1=95.4% — all
-bit-identical to the v3.12 baseline.
+**Phase 3 + 4 + 5 + 6a/6c complete; 6b BR n=10 running.** The Cython
+port is fully shipped and the BRKGA hot path is parallel. Throughput
+gain measured at **2.6×–5.3× more decodes/sec** at the same budget
+(see commit `ed7a35e`). Algorithm quality bit-identical: BR1#1 =
+91.05% / BR3#1 = 94.02% / IND2 = 4p 0unp 0errs / IND9 = u1=85.5% /
+IND10 = u1=95.4%. Final port report at
+`docs/reports/27_port_complete.md` (commit `2278104`).
 
 | Decoder | Numba | Cython | Speedup |
 |---|---|---|---|
@@ -47,6 +50,9 @@ db95105  Phase 3c: decode_blocks_njit_mode (mode 4) LIVE
 03b54ca  Phase 5a: decode_batch_njit_mode prange (7.85× per-call)
 4c799d9  Phase 5b: batch entries for all remaining decoders
 555158f  Phase 5c: driver.py uses decode_population_fitness
+ed7a35e  Phase 6a: wall-clock bench — 2.63-5.27× throughput measured
+2278104  Phase 6c: docs/reports/27_port_complete.md final report
+(in progress) Phase 6b: full BR n=10 at 30s budget — running
 ```
 
 ---
