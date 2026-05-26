@@ -42,6 +42,7 @@ from .dispatch import (
     warmup_jit,
     decode_chromosome,
     decode_auto_mode,
+    decode_population_fitness,
     _selector_to_mode,
 )
 from .precompute import (

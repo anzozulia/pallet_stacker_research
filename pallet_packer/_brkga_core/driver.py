@@ -45,6 +45,7 @@ from .dispatch import (
     warmup_jit,
     decode_chromosome,
     decode_auto_mode,
+    decode_population_fitness,
 )
 from .polish import local_search_2opt, path_relinking, lns_polish
 from .adaptive import (
@@ -401,13 +402,42 @@ def brkga_pack_v35(
 
         for k in range(K):
             fits = pop_fits[k]
+            # Phase 5c: batch-evaluate the entire sub-population in parallel.
+            # Returns fitness for every chromosome via vectorised math —
+            # no PackResult is constructed unless an individual improves on
+            # current best (rare after the first few generations). For BR
+            # workloads (mostly mode 4/5 hot path), this cuts per-generation
+            # time substantially even before the prange multiplier kicks in,
+            # because the wasted PackResult construction is eliminated.
+            batch_fits = decode_population_fitness(
+                pops[k], boxes, pallet, config,
+                n_rots_arr, dims_all, max_pallets=max_pallets,
+                use_multi_decoder=use_multi_decoder, n_modes=n_modes,
+                sku_id_per_box=sku_id_per_box,
+                sku_best_block=sku_best_block,
+                sku_top_k_blocks=sku_top_k_blocks,
+                mode_cdf=adaptive_state["mode_cdf"],
+                weights=weights_arr, mlot=mlot_arr,
+                pallet_max_weight=pallet_max_weight,
+                has_constraints=has_constraints,
+                support_ratio=support_ratio_value,
+                rfs=rfs_arr,
+                require_centroid=require_centroid_value,
+                cog_x_min=cog_x_min_value, cog_x_max=cog_x_max_value,
+                cog_y_min=cog_y_min_value, cog_y_max=cog_y_max_value,
+                cog_min_load_frac=cog_min_load_frac_value,
+                cog_active=cog_active_value,
+                max_overhang=max_overhang_value,
+            )
+            fits[:] = batch_fits
+            total_decodes += pop_size
+            # Per-individual best-update path. Order-preserving: same trail
+            # of best/second-best updates as the per-chromosome decode loop.
             for i in range(pop_size):
-                res = decoder(pops[k][i], boxes, pallet, config,
-                              n_rots_arr, dims_all, max_pallets=max_pallets)
-                fits[i] = _fitness_pallet1(res, pallet)
-                total_decodes += 1
                 if fits[i] < best_fitness - 1e-9:
-                    # Demote current best to second
+                    # New best — pay for PackResult construction now.
+                    res = decoder(pops[k][i], boxes, pallet, config,
+                                  n_rots_arr, dims_all, max_pallets=max_pallets)
                     second_best_fitness = best_fitness
                     second_best_chrom = best_chrom
                     best_fitness = float(fits[i])
@@ -418,7 +448,8 @@ def brkga_pack_v35(
                         print(f"  [v3.5 BRKGA] gen {gen} pop {k}: util={(1-best_fitness)*100:.2f}%")
                 elif (fits[i] < second_best_fitness - 1e-9 and
                       fits[i] > best_fitness + 1e-9):
-                    # Update second-best (distinct from best)
+                    # Update second-best (distinct from best) — no PackResult
+                    # needed; path-relinking re-decodes via the closure.
                     second_best_fitness = float(fits[i])
                     second_best_chrom = pops[k][i].copy()
 
