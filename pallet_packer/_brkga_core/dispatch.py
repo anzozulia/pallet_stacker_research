@@ -25,27 +25,28 @@ from ..packer import PackResult, PalletState
 from ..brkga_v3_fast import precompute_box_dims
 from .precompute import _NO_LIMIT
 from .blocks import resolve_sku_blocks_from_chrom
-from .jit_decoders_geom import (
-    decode_precomputed_blocks_njit_mode,
-)
 # Prefer the Cython-compiled geometric decoders when the .so is present
 # (built by `pip install -e .` inside the project Docker image). Falls back
 # to the Numba reference for environments without a build toolchain — same
-# signature, bit-identical results.
+# signatures, bit-identical results. Phase 3a-d completes the geometric
+# port: all four decoder entry points now have a Cython implementation.
 #   Phase 3a — decode_njit_mode (modes 0/1/2)
 #   Phase 3b — decode_layer_njit (mode 3)
 #   Phase 3c — decode_blocks_njit_mode (mode 4)
+#   Phase 3d — decode_precomputed_blocks_njit_mode (mode 5)
 try:
     from .jit_decoders_geom_cy import (  # noqa: F401
         decode_njit_mode,
         decode_layer_njit,
         decode_blocks_njit_mode,
+        decode_precomputed_blocks_njit_mode,
     )
 except ImportError:
     from .jit_decoders_geom import (  # noqa: F401
         decode_njit_mode,
         decode_layer_njit,
         decode_blocks_njit_mode,
+        decode_precomputed_blocks_njit_mode,
     )
 from .jit_decoders_cstr import (
     decode_njit_mode_cstr,

@@ -9,7 +9,11 @@ Phase 3a (this file): decode_njit_mode (modes 0/1/2 — DFTRC, wall, corner).
 Phase 3b (this file): decode_layer_njit (mode 3 — layer-build).
 Phase 3c (this file): decode_blocks_njit_mode (mode 4 — dynamic composite
                       blocks) + find_best_block_at_pos_njit helper.
-Phase 3d will land decode_precomputed_blocks_njit_mode here.
+Phase 3d (this file): decode_precomputed_blocks_njit_mode (mode 5 —
+                      Bischoff 2002 pre-computed top-K blocks).
+
+ALL geometric decoders now Cython. Phase 4 (constraint-aware decoders)
+lives in jit_decoders_cstr_cy.pyx.
 
 All cross-module calls use the .pxd `cimport` interface so the entire
 inner loop runs nogil — no Python boundary, no tuple boxing.
@@ -743,6 +747,294 @@ cdef i64 _blocks_loop(
         sku_remaining[my_sku] -= placed_so_far
 
         # --- Phase 5: single EMS commit for the whole block region ---
+        new_count = _commit_ems(
+            bin_emss[best_bin], bin_ems_count[best_bin],
+            best_x, best_y, best_z,
+            best_x + k * dx, best_y + l * dy, best_z + m * dz,
+            scratch)
+        for j in range(new_count):
+            bin_emss[best_bin, j, 0, 0] = scratch[j, 0, 0]
+            bin_emss[best_bin, j, 0, 1] = scratch[j, 0, 1]
+            bin_emss[best_bin, j, 0, 2] = scratch[j, 0, 2]
+            bin_emss[best_bin, j, 1, 0] = scratch[j, 1, 0]
+            bin_emss[best_bin, j, 1, 1] = scratch[j, 1, 1]
+            bin_emss[best_bin, j, 1, 2] = scratch[j, 1, 2]
+        bin_ems_count[best_bin] = new_count
+
+    return n_bins
+
+
+# ---------------------------------------------------------------------------
+# Phase 3d: decode_precomputed_blocks_njit_mode (mode 5 — Bischoff 2002).
+#
+# Per-SKU pre-computed (k, l, m, rot) block sized for the whole pallet (not
+# the current EMS). Phase 1 tries to place that exact pre-computed block at
+# DFTRC for its block dims. Phase 2 falls back to mode-4 (single-box DFTRC +
+# dynamic block extension). Phase 3 (new bin) tries pre-computed block first.
+#
+# Bit-identical to the Numba reference at fixed seed (see
+# scripts/ab_test_decoder_precomputed.py).
+# ---------------------------------------------------------------------------
+
+def decode_precomputed_blocks_njit_mode(
+    bps_order, n_rots_per_box, dims_all, sku_id_per_box, sku_best_block,
+    L, W, H, max_pallets, placements_out, n_skus,
+):
+    """Cython implementation of decode_precomputed_blocks_njit_mode.
+
+    sku_best_block: (n_skus, 4) — columns (k, l, m, rot) per SKU.
+    """
+    cdef i64 cL = L, cW = W, cH = H
+    cdef i64 MAX_BINS = max_pallets if max_pallets > 0 else 32
+    cdef i64 cn_skus = n_skus
+
+    cdef i64[:, :, :, ::1] bin_emss = np.zeros(
+        (MAX_BINS, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef i64[::1] bin_ems_count = np.zeros(MAX_BINS, dtype=np.int64)
+    cdef i64[:, :, ::1] scratch = np.zeros((MAX_EMS_C, 2, 3), dtype=np.int64)
+
+    cdef const i64[::1] bo_v = bps_order
+    cdef const i64[::1] nr_v = n_rots_per_box
+    cdef const i64[:, :, ::1] da_v = dims_all
+    cdef const i64[::1] sku_v = sku_id_per_box
+    cdef const i64[:, ::1] sbb_v = sku_best_block
+    cdef i64[:, ::1] po_v = placements_out
+
+    cdef i64 n = bo_v.shape[0]
+    cdef i64[::1] placed = np.zeros(n, dtype=np.int64)
+    cdef i64[::1] sku_remaining = np.zeros(cn_skus, dtype=np.int64)
+    return _precomputed_blocks_loop(
+        bo_v, nr_v, da_v, sku_v, sbb_v, cL, cW, cH, MAX_BINS, po_v,
+        bin_emss, bin_ems_count, scratch, placed, sku_remaining, n,
+    )
+
+
+cdef i64 _precomputed_blocks_loop(
+    const i64[::1] bps_order,
+    const i64[::1] n_rots_per_box,
+    const i64[:, :, ::1] dims_all,
+    const i64[::1] sku_id_per_box,
+    const i64[:, ::1] sku_best_block,
+    i64 L, i64 W, i64 H,
+    i64 MAX_BINS,
+    i64[:, ::1] placements_out,
+    i64[:, :, :, ::1] bin_emss,
+    i64[::1] bin_ems_count,
+    i64[:, :, ::1] scratch,
+    i64[::1] placed,
+    i64[::1] sku_remaining,
+    i64 n,
+) noexcept nogil:
+    """All-nogil inner driver for Phase 3d."""
+    cdef i64 n_bins = 0
+    cdef i64 i, b, r, j, box_idx, my_sku, max_count, n_rots
+    cdef i64 k_pre, l_pre, m_pre, rot_pre, n_pre
+    cdef i64 dx_pre, dy_pre, dz_pre, block_dx, block_dy, block_dz
+    cdef i64 best_bin, best_rot, best_x, best_y, best_z
+    cdef i64 best_k, best_l, best_m
+    cdef i64 best_score
+    cdef i64 idx, x, y, z, sc
+    cdef i64 single_best_score, single_best_rot, single_best_bin
+    cdef i64 single_best_x, single_best_y, single_best_z
+    cdef i64 dx, dy, dz, ek, el, em
+    cdef bint placed_in_new
+    cdef i64 k, l, m, block_count, placed_so_far, kk, ll, mm
+    cdef i64 px, py, pz, new_count
+
+    # Count remaining boxes per SKU.
+    for i in range(n):
+        sku_remaining[sku_id_per_box[bps_order[i]]] += 1
+
+    for i in range(n):
+        if placed[i] == 1:
+            continue
+        box_idx = bps_order[i]
+        my_sku = sku_id_per_box[box_idx]
+        max_count = sku_remaining[my_sku]
+        n_rots = n_rots_per_box[box_idx]
+
+        # Pre-computed block dims for this SKU.
+        k_pre = sku_best_block[my_sku, 0]
+        l_pre = sku_best_block[my_sku, 1]
+        m_pre = sku_best_block[my_sku, 2]
+        rot_pre = sku_best_block[my_sku, 3]
+        n_pre = k_pre * l_pre * m_pre
+
+        best_bin = -1
+        best_rot = -1
+        best_x = 0
+        best_y = 0
+        best_z = 0
+        best_k = 1
+        best_l = 1
+        best_m = 1
+
+        # --- Phase 1: try pre-computed block at DFTRC for block dims ---
+        if n_pre > 1 and max_count >= n_pre:
+            dx_pre = dims_all[box_idx, rot_pre, 0]
+            dy_pre = dims_all[box_idx, rot_pre, 1]
+            dz_pre = dims_all[box_idx, rot_pre, 2]
+            block_dx = k_pre * dx_pre
+            block_dy = l_pre * dy_pre
+            block_dz = m_pre * dz_pre
+            best_score = -1
+            for b in range(n_bins):
+                _find_best_dftrc(
+                    bin_emss[b], bin_ems_count[b],
+                    block_dx, block_dy, block_dz, L, W, H,
+                    &idx, &x, &y, &z)
+                if idx < 0:
+                    continue
+                sc = ((L - x - block_dx) * (L - x - block_dx)
+                      + (W - y - block_dy) * (W - y - block_dy)
+                      + (H - z - block_dz) * (H - z - block_dz))
+                if sc > best_score:
+                    best_score = sc
+                    best_bin = b
+                    best_rot = rot_pre
+                    best_x = x; best_y = y; best_z = z
+                    best_k = k_pre; best_l = l_pre; best_m = m_pre
+
+        # --- Phase 2: fallback — mode 4 style single-box DFTRC + dynamic ---
+        if best_bin < 0:
+            single_best_score = -1
+            single_best_rot = -1
+            single_best_x = 0
+            single_best_y = 0
+            single_best_z = 0
+            single_best_bin = -1
+            for b in range(n_bins):
+                for r in range(n_rots):
+                    dx = dims_all[box_idx, r, 0]
+                    dy = dims_all[box_idx, r, 1]
+                    dz = dims_all[box_idx, r, 2]
+                    _find_best_dftrc(
+                        bin_emss[b], bin_ems_count[b],
+                        dx, dy, dz, L, W, H,
+                        &idx, &x, &y, &z)
+                    if idx < 0:
+                        continue
+                    sc = ((L - x - dx) * (L - x - dx)
+                          + (W - y - dy) * (W - y - dy)
+                          + (H - z - dz) * (H - z - dz))
+                    if sc > single_best_score:
+                        single_best_score = sc
+                        single_best_bin = b
+                        single_best_rot = r
+                        single_best_x = x
+                        single_best_y = y
+                        single_best_z = z
+                if single_best_bin >= 0:
+                    break
+            if single_best_bin >= 0:
+                dx = dims_all[box_idx, single_best_rot, 0]
+                dy = dims_all[box_idx, single_best_rot, 1]
+                dz = dims_all[box_idx, single_best_rot, 2]
+                _find_best_block_at_pos(
+                    bin_emss[single_best_bin],
+                    bin_ems_count[single_best_bin],
+                    single_best_x, single_best_y, single_best_z,
+                    dx, dy, dz, max_count,
+                    &ek, &el, &em)
+                best_bin = single_best_bin
+                best_rot = single_best_rot
+                best_x = single_best_x
+                best_y = single_best_y
+                best_z = single_best_z
+                best_k = ek; best_l = el; best_m = em
+
+        # --- Phase 3: still no fit → open new bin (pre-computed first) ---
+        if best_bin < 0:
+            if n_bins >= MAX_BINS:
+                placements_out[i, 5] = 0
+                placed[i] = 1
+                sku_remaining[my_sku] -= 1
+                continue
+            bin_emss[n_bins, 0, 0, 0] = 0
+            bin_emss[n_bins, 0, 0, 1] = 0
+            bin_emss[n_bins, 0, 0, 2] = 0
+            bin_emss[n_bins, 0, 1, 0] = L
+            bin_emss[n_bins, 0, 1, 1] = W
+            bin_emss[n_bins, 0, 1, 2] = H
+            bin_ems_count[n_bins] = 1
+            placed_in_new = False
+            if n_pre > 1 and max_count >= n_pre:
+                dx_pre = dims_all[box_idx, rot_pre, 0]
+                dy_pre = dims_all[box_idx, rot_pre, 1]
+                dz_pre = dims_all[box_idx, rot_pre, 2]
+                block_dx = k_pre * dx_pre
+                block_dy = l_pre * dy_pre
+                block_dz = m_pre * dz_pre
+                if block_dx <= L and block_dy <= W and block_dz <= H:
+                    best_bin = n_bins
+                    best_rot = rot_pre
+                    best_x = 0; best_y = 0; best_z = 0
+                    best_k = k_pre; best_l = l_pre; best_m = m_pre
+                    placed_in_new = True
+                    n_bins += 1
+            if not placed_in_new:
+                single_best_rot = -1
+                for r in range(n_rots):
+                    dx = dims_all[box_idx, r, 0]
+                    dy = dims_all[box_idx, r, 1]
+                    dz = dims_all[box_idx, r, 2]
+                    if dx <= L and dy <= W and dz <= H:
+                        single_best_rot = r
+                        break
+                if single_best_rot < 0:
+                    placements_out[i, 5] = 0
+                    placed[i] = 1
+                    sku_remaining[my_sku] -= 1
+                    continue
+                dx = dims_all[box_idx, single_best_rot, 0]
+                dy = dims_all[box_idx, single_best_rot, 1]
+                dz = dims_all[box_idx, single_best_rot, 2]
+                _find_best_block_at_pos(
+                    bin_emss[n_bins], 1, 0, 0, 0, dx, dy, dz, max_count,
+                    &ek, &el, &em)
+                best_bin = n_bins
+                best_rot = single_best_rot
+                best_x = 0; best_y = 0; best_z = 0
+                best_k = ek; best_l = el; best_m = em
+                n_bins += 1
+
+        # --- Phase 4: assign positions to next block_count same-SKU boxes ---
+        dx = dims_all[box_idx, best_rot, 0]
+        dy = dims_all[box_idx, best_rot, 1]
+        dz = dims_all[box_idx, best_rot, 2]
+        k = best_k; l = best_l; m = best_m
+        block_count = k * l * m
+
+        placed_so_far = 0
+        kk = 0; ll = 0; mm = 0
+        for j in range(i, n):
+            if placed_so_far >= block_count:
+                break
+            if placed[j] == 1:
+                continue
+            if sku_id_per_box[bps_order[j]] != my_sku:
+                continue
+            px = best_x + kk * dx
+            py = best_y + ll * dy
+            pz = best_z + mm * dz
+            placements_out[j, 0] = best_bin
+            placements_out[j, 1] = best_rot
+            placements_out[j, 2] = px
+            placements_out[j, 3] = py
+            placements_out[j, 4] = pz
+            placements_out[j, 5] = 1
+            placed[j] = 1
+            placed_so_far += 1
+            kk += 1
+            if kk >= k:
+                kk = 0
+                ll += 1
+                if ll >= l:
+                    ll = 0
+                    mm += 1
+        sku_remaining[my_sku] -= placed_so_far
+
+        # --- Phase 5: commit EMS for the block region ---
         new_count = _commit_ems(
             bin_emss[best_bin], bin_ems_count[best_bin],
             best_x, best_y, best_z,
