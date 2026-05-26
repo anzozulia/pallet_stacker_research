@@ -7,13 +7,14 @@ resume; the "Resume here" section at the bottom is the next action.
 
 ## 1. Where we are right now
 
-**Phase 3 + 4 + 5 + 6a/6c complete; 6b BR n=10 running.** The Cython
-port is fully shipped and the BRKGA hot path is parallel. Throughput
-gain measured at **2.6×–5.3× more decodes/sec** at the same budget
-(see commit `ed7a35e`). Algorithm quality bit-identical: BR1#1 =
-91.05% / BR3#1 = 94.02% / IND2 = 4p 0unp 0errs / IND9 = u1=85.5% /
-IND10 = u1=95.4%. Final port report at
-`docs/reports/27_port_complete.md` (commit `2278104`).
+**ALL phases complete (Phase 0 through 6).** The Cython port is shipped,
+parallel BRKGA is live, and the BR n=10 final eval is done. Throughput
+gain **2.6×–5.3×** at the same budget (commit `ed7a35e`). Algorithmic
+quality not just preserved — BR mean util across 40 instances is
+**+0.25 pp vs v3.12 baseline** (17 wins / 22 ties / 1 loss). BR7 alone
+gains +0.46 pp. All canonical anchors match exactly (BR1#1=91.05%,
+BR3#1=94.02%, IND2 = 4p 0unp 0errs, IND9 = u1=85.5%, IND10 = u1=95.4%).
+Final port report: `docs/reports/27_port_complete.md`.
 
 | Decoder | Numba | Cython | Speedup |
 |---|---|---|---|
@@ -52,7 +53,8 @@ db95105  Phase 3c: decode_blocks_njit_mode (mode 4) LIVE
 555158f  Phase 5c: driver.py uses decode_population_fitness
 ed7a35e  Phase 6a: wall-clock bench — 2.63-5.27× throughput measured
 2278104  Phase 6c: docs/reports/27_port_complete.md final report
-(in progress) Phase 6b: full BR n=10 at 30s budget — running
+5247082  Phase 6d: per-chromosome top-K block resolution in batch (FIX)
+b0f0a89  Phase 6b: BR n=10 final results appended to report
 ```
 
 ---
@@ -362,7 +364,41 @@ random BPS orderings + same dims, assert `placements_out` arrays are
 
 ## 9. RESUME HERE
 
-**Next action: Phase 6 — end-to-end final eval + report.**
+**The port is complete.** This section now lists possible OPTIONAL
+follow-ons; none are required for production-readiness.
+
+### Possible future work
+
+- **Close the BR1 SOTA gap.** v3.12 + port mean BR1 util is 91.03 %;
+  Gonçalves-Resende 2013 reports 92.62 %. The algorithm saturates at
+  91.03 % regardless of extra generations — the gap is algorithmic,
+  not throughput. Candidates: smarter seeding, mid-run mode adaptation,
+  larger LS budget.
+
+- **Per-thread scratch reuse in batch decoders.** Each call to a
+  `decode_batch_*` entry allocates ~16 MB per generation; cache and
+  zero instead of reallocating to recover ~10-15 ms/gen on small
+  instances. Won't help BR (already 2.6×-5.3× faster), but may help
+  industry workloads with smaller pop_size + tighter time budgets.
+
+- **prange the polish step.** LS 2-opt evaluates many neighbours
+  sequentially. Each is an independent decode — same prange pattern
+  as Phase 5b should give another 4-8× on the polish budget.
+
+- **Batch path-relinking.** PR re-decodes ~50 intermediate chromosomes
+  per call. Wrap in a batch entry.
+
+- **v2 PalletPacker port.** Currently runs in pure Python (~0.5 s on
+  n=120 BR instances). Marginal benefit since it runs once per call.
+
+If picking up any of these, the patterns in `docs/reports/25_refactor.md`
+(refactor pattern) and Section 3 of this handoff (Cython patterns) are
+the references. The A/B harness pattern in `scripts/ab_test_*.py`
+should be copied for any new decoder/helper to maintain bit-identicality.
+
+---
+
+## (Historical) Original Phase 6 plan
 
 The port is functionally complete:
 - Cython for every decoder (Phase 3 + 4).
