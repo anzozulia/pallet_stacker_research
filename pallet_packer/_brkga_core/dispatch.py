@@ -441,6 +441,7 @@ try:
         decode_batch_layer_njit,
         decode_batch_blocks_njit_mode,
         decode_batch_precomputed_blocks_njit_mode,
+        decode_batch_precomputed_blocks_per_chrom,
     )
     from .jit_decoders_cstr_cy import (  # noqa: F401
         decode_batch_njit_mode_cstr,
@@ -645,7 +646,23 @@ def _decode_mode_batch(
                 population, n_rots_arr, dims_all, L, W, H, max_pallets,
                 0, placements_out_all, n_bins_out,
             )
-        elif mode == 5 and sku_best_block is not None and sku_top_k_blocks is None:
+        elif mode == 5 and sku_top_k_blocks is not None:
+            # Per-chromosome top-K resolution (v3.8): each chromosome picks
+            # its own (k, l, m, rot) per SKU from top_k_blocks via chrom keys.
+            # Resolve outside nogil (numpy/Python), then run the batch entry
+            # that takes the per-chrom chosen array.
+            n_boxes = n_rots_arr.shape[0]
+            chosen_per_chrom = np.zeros(
+                (population.shape[0], n_skus, 4), dtype=np.int64)
+            for ci in range(population.shape[0]):
+                chosen_per_chrom[ci] = resolve_sku_blocks_from_chrom(
+                    population[ci], n_boxes, n_skus, sku_top_k_blocks)
+            decode_batch_precomputed_blocks_per_chrom(
+                population, n_rots_arr, dims_all, sku_id_per_box,
+                chosen_per_chrom,
+                L, W, H, max_pallets, placements_out_all, n_bins_out, n_skus,
+            )
+        elif mode == 5 and sku_best_block is not None:
             decode_batch_precomputed_blocks_njit_mode(
                 population, n_rots_arr, dims_all, sku_id_per_box, sku_best_block,
                 L, W, H, max_pallets, placements_out_all, n_bins_out, n_skus,

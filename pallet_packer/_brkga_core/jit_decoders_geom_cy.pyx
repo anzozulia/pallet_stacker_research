@@ -1244,3 +1244,57 @@ def decode_batch_precomputed_blocks_njit_mode(
                 placed_all[i], skur_all[i], n_boxes,
             )
     return n_bins_out
+
+
+def decode_batch_precomputed_blocks_per_chrom(
+    chromosomes, n_rots_per_box, dims_all, sku_id_per_box,
+    chosen_per_chrom,        # (pop_size, n_skus, 4) — pre-resolved by caller
+    L, W, H, max_pallets,
+    placements_out_all, n_bins_out, n_skus,
+):
+    """Phase 5c fix: mode 5 with top-K needs per-chromosome block resolution.
+
+    The Phase 5b decode_batch_precomputed_blocks_njit_mode took a single
+    sku_best_block shared across the population — fine when block selection
+    is global (v3.8 best-per-SKU). With the v3.8 top-K enhancement, each
+    chromosome resolves its own (k, l, m, rot) per SKU from chrom keys, so
+    the batch entry needs (pop_size, n_skus, 4) chosen arrays.
+
+    Caller resolves chosen_per_chrom outside this function (numpy/Python);
+    this wrapper slices per-chromosome and runs the existing nogil
+    _precomputed_blocks_loop in prange.
+    """
+    cdef Py_ssize_t pop_size = chromosomes.shape[0]
+    cdef i64 n_boxes = n_rots_per_box.shape[0]
+    cdef i64 cL = L, cW = W, cH = H
+    cdef i64 MAX_BINS = max_pallets if max_pallets > 0 else 32
+    cdef i64 cn_skus = n_skus
+
+    bps = np.ascontiguousarray(chromosomes)[:, :n_boxes]
+    orders_np = np.argsort(bps, axis=1).astype(np.int64)
+    cdef const i64[:, ::1] orders = orders_np
+    cdef const i64[::1] nr_v = n_rots_per_box
+    cdef const i64[:, :, ::1] da_v = dims_all
+    cdef const i64[::1] sku_v = sku_id_per_box
+    cdef const i64[:, :, ::1] cpc = chosen_per_chrom    # (pop_size, n_skus, 4)
+    cdef i64[:, :, ::1] po_all = placements_out_all
+    cdef i64[::1] nb_out = n_bins_out
+
+    cdef i64[:, :, :, :, ::1] be_all = np.zeros(
+        (pop_size, MAX_BINS, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef i64[:, ::1] bec_all = np.zeros((pop_size, MAX_BINS), dtype=np.int64)
+    cdef i64[:, :, :, ::1] sc_all = np.zeros(
+        (pop_size, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef i64[:, ::1] placed_all = np.zeros((pop_size, n_boxes), dtype=np.int64)
+    cdef i64[:, ::1] skur_all = np.zeros((pop_size, cn_skus), dtype=np.int64)
+
+    cdef Py_ssize_t i
+    with nogil:
+        for i in prange(pop_size, schedule='static'):
+            nb_out[i] = _precomputed_blocks_loop(
+                orders[i], nr_v, da_v, sku_v, cpc[i],
+                cL, cW, cH, MAX_BINS, po_all[i],
+                be_all[i], bec_all[i], sc_all[i],
+                placed_all[i], skur_all[i], n_boxes,
+            )
+    return n_bins_out
