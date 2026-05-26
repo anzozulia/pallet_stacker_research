@@ -41,9 +41,7 @@ Internal nogil C surface (called by Phase 3+ Cython decoders):
 """
 import numpy as np
 cimport numpy as cnp
-from libc.stdint cimport int64_t
-
-ctypedef int64_t i64
+# i64 + int64_t come from the companion jit_constraints_cy.pxd
 
 # Sentinel mirroring jit_constraints._NO_LIMIT. Keep in sync with the
 # Numba module — used to short-circuit the CoG check when there's no
