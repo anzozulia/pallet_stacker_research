@@ -265,6 +265,70 @@ A focused implementation plan is now warranted (next document).
 
 ---
 
+## 5. Full BR n=10 validation — n_restarts=2
+
+Ran the canonical BR n=10 benchmark with `n_restarts=2` (v2-seed for
+restart 0, no-v2 for restart 1, take best of two 15 s runs).
+
+| Set | v3.8 | port (Phase 5) | r=2 | Δ vs port | Δ vs v3.8 | W/T/L |
+|---|---:|---:|---:|---:|---:|---:|
+| BR1 | 91.03 % | 91.03 % | 91.13 % | +0.10 pp | +0.10 pp | 1/9/0 |
+| BR3 | 93.35 % | 93.56 % | 93.55 % | −0.01 pp | +0.20 pp | 3/6/1 |
+| BR5 | 92.59 % | 92.92 % | 93.03 % | +0.11 pp | +0.44 pp | 4/4/2 |
+| BR7 | 92.50 % | 92.96 % | 93.12 % | +0.16 pp | +0.62 pp | 3/3/4 |
+| **Overall** | — | — | — | **+0.09 pp** | +0.34 pp | 11/22/7 |
+
+Findings:
+- BR1 gains only +0.10 pp — closes 6 % of the 1.59 pp SOTA gap.
+- BR1#1 jumps +0.97 pp as predicted by the diversification test; the
+  other 9 BR1 instances are unchanged.
+- BR3 is essentially neutral (-0.01 pp); some instances regressed.
+- BR5/7 see small mean gains but with 6 losses across the two sets.
+- Net: 11 wins, 22 ties, 7 losses across 40 instances. **Not a Pareto
+  improvement** — splitting the 30 s budget hurts some instances by
+  cutting off their natural convergence at 15 s.
+
+n_restarts=2 is a marginal mean improvement but not a clean default
+change. Need a strategy that diversifies WITHOUT splitting the budget.
+
+---
+
+## 6. What it would actually take to close the gap
+
+Given the empirical data, the 1.59 pp gap is composed of:
+
+| Source | Estimated pp |
+|---|---:|
+| Instances stuck in v2-anchored basin (BR1#1, #2) | 0.3 |
+| Hard-stuck instances (BR1#3, #4) | 0.5–0.8 |
+| Marginal under-convergence on the rest | 0.2–0.4 |
+| Random per-seed variance | 0.1–0.3 |
+
+Each bucket needs a different fix:
+
+- **v2-anchored basins** → diversification (multi-strategy populations
+  with reduced migration; or per-pop seeding strategies). ~0.5d.
+- **Hard-stuck instances** → block-aware LS operator (swap entire
+  same-SKU blocks, not just single boxes). ~1d.
+- **Marginal under-convergence** → parallel LS using Phase 5 batch infra
+  (more LS evaluations in same budget). ~0.5d.
+- **Random variance** → multi-seed ensemble with best-of. Costs compute.
+
+Realistic combined gain estimate: 0.8–1.5 pp. Likely brings BR1 mean
+to 91.8–92.5 %, closing 50–95 % of the gap. The remaining gap (if any)
+is probably literature-vs-our-decoder differences (G&R 2013 used
+layer-based decoders exclusively; we use 1/6 layer + 5/6 other).
+
+These are now properly-sized engineering tasks, not config-knob
+experiments. **Recommended priority order**:
+
+1. Multi-strategy populations with reduced migration_interval (cheap)
+2. Block-aware LS operator (most-leverage for hard instances)
+3. Parallel LS via Phase 5 batch infra (compounds with #2)
+4. Optional: layer-mode-biased mode_cdf default for BR-like workloads
+
+---
+
 ## 5. Open questions
 
 - Is the literature's 92.62 % at 30 s budget or longer? Original 2013
