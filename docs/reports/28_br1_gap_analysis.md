@@ -381,6 +381,90 @@ This is the first shippable gap-closing change.
 
 ---
 
+## 9. Phase 7b experiment — block-aware LS (NEGATIVE result)
+
+Added two new LS operators to `polish.local_search_2opt`:
+
+- **block_swap**: find two same-SKU runs in the BPS order, swap their
+  positions as a unit.
+- **block_consolidate**: pick a SKU whose positions are scattered, pull
+  them all adjacent to its first occurrence.
+
+Both operators target the macro-structure that BR-style block extension
+exploits. Probabilities: 15 % block_swap + 10 % block_consolidate when
+sku_id_per_box is available (replacing 25 % of original mass).
+
+### 9.1 Results
+
+10 BR1 instances at 30 s budget, 3 configs:
+
+| Instance | baseline | + LNS | + LNS + LS=8 s |
+|---|---:|---:|---:|
+| BR1#1 | 91.18 % | 91.18 % | 91.18 % |
+| BR1#2 | 92.62 % | 92.62 % | 92.62 % |
+| BR1#3 | 88.11 % | 88.11 % | 88.11 % |
+| BR1#4 | 86.83 % | 86.83 % | 86.83 % |
+| BR1#5 | 94.63 % | 94.63 % | 94.63 % |
+| BR1#6 | 91.91 % | 91.91 % | 91.91 % |
+| BR1#7 | 90.93 % | 90.93 % | 90.93 % |
+| BR1#8 | 96.39 % | 96.39 % | 96.39 % |
+| BR1#9 | 88.55 % | 88.55 % | 88.55 % |
+| BR1#10 | 92.58 % | 92.58 % | 92.58 % |
+
+**Zero change across all 30 cases.** Block-aware LS, LNS, and a 2×
+LS budget all fail to escape the local optimum.
+
+### 9.2 Diagnostic — why nothing helps
+
+Verbose trace on BR1#3:
+
+```
+BRKGA gen   2  pop 2: util=88.11%   ← smart-init's first iteration
+BRKGA gen   2..200            still 88.11% — population converges fast
+BRKGA gen 201:  patience triggered, decodes=121,200
+LS:             0/22,008 accepted, final util=88.11%
+```
+
+- BRKGA's `best` is found at gen **2** — smart-init lands on a deep
+  local optimum almost immediately.
+- 200 BRKGA generations of evolution can't escape.
+- 22,008 LS moves (mix of swap/reverse/insert/block_swap/block_consolidate/
+  rotation/decoder-flip) — all rejected.
+- The basin is structurally inescapable with any single-chromosome
+  local move operator we have available.
+
+### 9.3 Conclusions for the BR1 SOTA gap
+
+The block-aware operators are correctly implemented and well-tested
+but produce zero quality gain on the hard-stuck BR1 instances. This
+is a meaningful negative result that constrains the search space for
+future work:
+
+- More single-move LS effort won't help — the basin is genuinely deep.
+- LNS doesn't help — random key destruction at 5–25 % still lands in
+  the same basin after re-decode.
+- Block-level macro moves don't help — the block structure is part of
+  the optimum itself; perturbing it monotonically lowers fitness.
+
+**The remaining 1.25 pp gap is not within reach of LS-based polish.**
+Closing it likely requires one of:
+
+1. **Different decoder design** — G&R 2013 used 3 specialized layer-
+   based decoders exclusively. Our DFTRC-dominant mix may converge to
+   different optima.
+2. **Deeper restart strategies** — population reset on patience
+   trigger (rather than termination), with completely different seeding.
+3. **Tree-search-based polish** — DFS/BFS over a small neighborhood
+   of placement decisions for the best chromosome.
+4. **Exact MIP polish** — for small instances (N < 80), solve the
+   container-loading IP on the residual space after BRKGA.
+
+These are days-to-weeks of work each. The +0.46 pp from Phase 7a
+remains the realized gain; further pursuit of the SOTA gap is a
+research-grade undertaking.
+
+---
+
 ## 5. Open questions
 
 - Is the literature's 92.62 % at 30 s budget or longer? Original 2013

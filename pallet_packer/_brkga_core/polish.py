@@ -122,19 +122,59 @@ def local_search_2opt(
             out[order_arr[pos]] = (pos + 0.5) / n
         return out
 
+    # Block-aware move support (v3.13). When sku_id_per_box is supplied,
+    # two additional operators target macro-moves at SKU-run granularity:
+    # block_swap (swap two same-SKU runs) and block_consolidate (gather a
+    # SKU's scattered positions). Designed for homogeneous loads (BR1/3)
+    # where single-box LS can't escape the block-induced local optimum.
+    block_aware = sku_id_per_box is not None
+    sku_arr = np.asarray(sku_id_per_box, dtype=np.int64) if block_aware else None
+
+    def find_sku_runs(order_arr: np.ndarray):
+        """Return list of (start, end, sku_id) runs in current order."""
+        runs = []
+        cur_sku = -1
+        start = 0
+        for i in range(len(order_arr)):
+            s = int(sku_arr[order_arr[i]])
+            if s != cur_sku:
+                if cur_sku != -1:
+                    runs.append((start, i, cur_sku))
+                cur_sku = s
+                start = i
+        if cur_sku != -1:
+            runs.append((start, len(order_arr), cur_sku))
+        return runs
+
     while time.time() - t0 < time_budget_s:
         new_order = order.copy()
         candidate = current.copy()
         move = rng.random()
-        if move < 0.30:
-            # Position swap
+        # Move probabilities — block-aware operators replace ~25% of the
+        # mass when sku_id_per_box is available. Without it, fall back to
+        # the original distribution.
+        if block_aware:
+            p_swap, p_rev, p_insert, p_bswap, p_bcons, p_rot, p_dec = (
+                0.20, 0.18, 0.15, 0.15, 0.10, 0.18, 0.04)
+        else:
+            p_swap, p_rev, p_insert, p_bswap, p_bcons, p_rot, p_dec = (
+                0.30, 0.25, 0.20, 0.0, 0.0, 0.20, 0.05)
+        thresh_swap   = p_swap
+        thresh_rev    = thresh_swap   + p_rev
+        thresh_insert = thresh_rev    + p_insert
+        thresh_bswap  = thresh_insert + p_bswap
+        thresh_bcons  = thresh_bswap  + p_bcons
+        thresh_rot    = thresh_bcons  + p_rot
+
+        if move < thresh_swap:
+            # Position swap (single box)
             i = int(rng.integers(0, n))
             j = int(rng.integers(0, n))
             if i == j:
                 continue
             new_order[i], new_order[j] = new_order[j], new_order[i]
             candidate = encode_order(new_order)
-        elif move < 0.55:
+        elif move < thresh_rev:
             # Segment reverse (k=2..7)
             if n < 4:
                 continue
@@ -142,8 +182,8 @@ def local_search_2opt(
             i = int(rng.integers(0, n - k))
             new_order[i:i + k] = new_order[i:i + k][::-1]
             candidate = encode_order(new_order)
-        elif move < 0.75:
-            # Insert: take box at position i, insert at position j
+        elif move < thresh_insert:
+            # Insert
             i = int(rng.integers(0, n))
             j = int(rng.integers(0, n))
             if i == j:
@@ -152,8 +192,62 @@ def local_search_2opt(
             new_order = np.delete(new_order, i)
             new_order = np.insert(new_order, j if j < i else j - 1, box_i)
             candidate = encode_order(new_order)
-        elif move < 0.95:
-            # Rotation flip for one box (~5% of moves)
+        elif move < thresh_bswap:
+            # BLOCK SWAP: find two same-SKU runs, swap their positions.
+            # Operates as a macro-move that swaps entire SKU clusters,
+            # giving the decoder a chance to form different blocks.
+            runs = find_sku_runs(new_order)
+            if len(runs) < 2:
+                continue
+            ra, rb = rng.choice(len(runs), size=2, replace=False)
+            a_s, a_e, _ = runs[int(ra)]
+            b_s, b_e, _ = runs[int(rb)]
+            block_a = new_order[a_s:a_e].copy()
+            block_b = new_order[b_s:b_e].copy()
+            # Replace block A's slice with B (and vice-versa) — index math
+            # depends on which run comes first.
+            if a_s < b_s:
+                head = new_order[:a_s]
+                mid  = new_order[a_e:b_s]
+                tail = new_order[b_e:]
+                new_order = np.concatenate([head, block_b, mid, block_a, tail])
+            else:
+                head = new_order[:b_s]
+                mid  = new_order[b_e:a_s]
+                tail = new_order[a_e:]
+                new_order = np.concatenate([head, block_a, mid, block_b, tail])
+            candidate = encode_order(new_order)
+        elif move < thresh_bcons:
+            # BLOCK CONSOLIDATE: pick a SKU with scattered positions, pull
+            # all of them adjacent to its first occurrence. Enables the
+            # block-extension decoder to form a bigger composite block.
+            # Skip degenerate cases (only 1 occurrence of any SKU).
+            unique_skus = np.unique(sku_arr)
+            # Pick a SKU that has at least 2 positions.
+            sku_pick = -1
+            for _try in range(8):
+                cand_sku = int(unique_skus[int(rng.integers(0, len(unique_skus)))])
+                positions = np.where(sku_arr[new_order] == cand_sku)[0]
+                if len(positions) >= 2:
+                    sku_pick = cand_sku
+                    break
+            if sku_pick == -1:
+                continue
+            positions = np.where(sku_arr[new_order] == sku_pick)[0]
+            # If already consolidated, skip.
+            if positions[-1] - positions[0] == len(positions) - 1:
+                continue
+            # Pull all into the first occurrence's region.
+            boxes_in_sku = new_order[positions].copy()
+            mask = np.ones(n, dtype=bool)
+            mask[positions] = False
+            other_boxes = new_order[mask]
+            target = int(positions[0])
+            new_order = np.concatenate([
+                other_boxes[:target], boxes_in_sku, other_boxes[target:]])
+            candidate = encode_order(new_order)
+        elif move < thresh_rot:
+            # Rotation flip for one box
             i = int(rng.integers(0, n))
             candidate[n + i] = rng.random()
         else:
