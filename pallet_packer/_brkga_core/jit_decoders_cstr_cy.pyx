@@ -23,6 +23,7 @@ scripts/ab_test_decoder_cstr_modes012.py.
 import numpy as np
 cimport numpy as cnp
 from libc.stdint cimport int64_t
+from cython.parallel cimport prange
 
 from .v3fast_cy cimport _find_best_dftrc, _commit_ems, MAX_EMS_C
 from .jit_primitives_cy cimport (
@@ -1157,3 +1158,191 @@ cdef i64 _decode_cstr_layer_loop(
         n_bins += 1
 
     return n_bins
+
+
+# ===========================================================================
+# Phase 5b: batch entry points for the constraint-aware decoders.
+# Per-chromosome scratch arrays + cython.parallel.prange. Same determinism
+# contract as Phase 5a — schedule='static' makes chromosome i always land
+# on the same thread for a given pop_size.
+# ===========================================================================
+
+
+def decode_batch_njit_mode_cstr(
+    chromosomes, n_rots_per_box, dims_all,
+    L, W, H, max_pallets,
+    mode,
+    weights, mlot, rfs, pallet_max_weight, support_ratio,
+    require_centroid,
+    cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+    cog_min_load_frac, cog_active,
+    placements_out_all, n_bins_out,
+):
+    """Batch-decode pop_size chromosomes for cstr modes 0/1/2 in parallel."""
+    cdef Py_ssize_t pop_size = chromosomes.shape[0]
+    cdef i64 n_boxes = n_rots_per_box.shape[0]
+    cdef int cmode = mode
+    cdef i64 cL = L, cW = W, cH = H
+    cdef i64 MAX_BINS = max_pallets if max_pallets > 0 else 32
+    cdef double pmw = pallet_max_weight
+    cdef double sr = support_ratio
+    cdef int rc = require_centroid
+    cdef double cxmn = cog_x_min, cxmx = cog_x_max
+    cdef double cymn = cog_y_min, cymx = cog_y_max
+    cdef double cmlf = cog_min_load_frac
+    cdef int cact = cog_active
+
+    bps = np.ascontiguousarray(chromosomes)[:, :n_boxes]
+    orders_np = np.argsort(bps, axis=1).astype(np.int64)
+    cdef const i64[:, ::1] orders = orders_np
+    cdef const i64[::1] nr_v = n_rots_per_box
+    cdef const i64[:, :, ::1] da_v = dims_all
+    cdef const double[::1] w_v = weights
+    cdef const double[::1] mlot_v = mlot
+    cdef const i64[::1] rfs_v = rfs
+    cdef i64[:, :, ::1] po_all = placements_out_all
+    cdef i64[::1] nb_out = n_bins_out
+
+    cdef i64[:, :, :, :, ::1] be_all = np.zeros(
+        (pop_size, MAX_BINS, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef i64[:, ::1] bec_all = np.zeros((pop_size, MAX_BINS), dtype=np.int64)
+    cdef i64[:, :, :, ::1] sc_all = np.zeros(
+        (pop_size, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef double[:, ::1] palw_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
+    cdef double[:, ::1] ptl_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
+    cdef double[:, ::1] psx_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
+    cdef double[:, ::1] psy_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
+
+    cdef Py_ssize_t i
+    with nogil:
+        for i in prange(pop_size, schedule='static'):
+            nb_out[i] = _decode_cstr_012_loop(
+                orders[i], nr_v, da_v, cL, cW, cH, MAX_BINS,
+                po_all[i], cmode,
+                be_all[i], bec_all[i], sc_all[i],
+                w_v, mlot_v, rfs_v, pmw, sr, rc,
+                cxmn, cxmx, cymn, cymx, cmlf, cact,
+                palw_all[i], ptl_all[i], psx_all[i], psy_all[i], n_boxes,
+            )
+    return n_bins_out
+
+
+def decode_batch_blocks_njit_mode_cstr(
+    chromosomes, n_rots_per_box, dims_all, sku_id_per_box,
+    L, W, H, max_pallets,
+    weights, mlot, rfs, pallet_max_weight, support_ratio,
+    require_centroid,
+    cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+    cog_min_load_frac, cog_active,
+    placements_out_all, n_bins_out, n_skus,
+):
+    """Batch-decode pop_size chromosomes for cstr mode 4 in parallel."""
+    cdef Py_ssize_t pop_size = chromosomes.shape[0]
+    cdef i64 n_boxes = n_rots_per_box.shape[0]
+    cdef i64 cL = L, cW = W, cH = H
+    cdef i64 MAX_BINS = max_pallets if max_pallets > 0 else 32
+    cdef i64 cn_skus = n_skus
+    cdef double pmw = pallet_max_weight
+    cdef double sr = support_ratio
+    cdef int rc = require_centroid
+    cdef double cxmn = cog_x_min, cxmx = cog_x_max
+    cdef double cymn = cog_y_min, cymx = cog_y_max
+    cdef double cmlf = cog_min_load_frac
+    cdef int cact = cog_active
+
+    bps = np.ascontiguousarray(chromosomes)[:, :n_boxes]
+    orders_np = np.argsort(bps, axis=1).astype(np.int64)
+    cdef const i64[:, ::1] orders = orders_np
+    cdef const i64[::1] nr_v = n_rots_per_box
+    cdef const i64[:, :, ::1] da_v = dims_all
+    cdef const i64[::1] sku_v = sku_id_per_box
+    cdef const double[::1] w_v = weights
+    cdef const double[::1] mlot_v = mlot
+    cdef const i64[::1] rfs_v = rfs
+    cdef i64[:, :, ::1] po_all = placements_out_all
+    cdef i64[::1] nb_out = n_bins_out
+
+    cdef i64[:, :, :, :, ::1] be_all = np.zeros(
+        (pop_size, MAX_BINS, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef i64[:, ::1] bec_all = np.zeros((pop_size, MAX_BINS), dtype=np.int64)
+    cdef i64[:, :, :, ::1] sc_all = np.zeros(
+        (pop_size, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef i64[:, ::1] placed_all = np.zeros((pop_size, n_boxes), dtype=np.int64)
+    cdef i64[:, ::1] skur_all = np.zeros((pop_size, cn_skus), dtype=np.int64)
+    cdef double[:, ::1] palw_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
+    cdef double[:, ::1] ptl_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
+    cdef double[:, ::1] psx_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
+    cdef double[:, ::1] psy_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
+
+    cdef Py_ssize_t i
+    with nogil:
+        for i in prange(pop_size, schedule='static'):
+            nb_out[i] = _decode_cstr_blocks_loop(
+                orders[i], nr_v, da_v, sku_v, cL, cW, cH, MAX_BINS,
+                po_all[i],
+                be_all[i], bec_all[i], sc_all[i],
+                w_v, mlot_v, rfs_v, pmw, sr, rc,
+                cxmn, cxmx, cymn, cymx, cmlf, cact,
+                placed_all[i], skur_all[i],
+                palw_all[i], ptl_all[i], psx_all[i], psy_all[i], n_boxes,
+            )
+    return n_bins_out
+
+
+def decode_batch_layer_njit_cstr(
+    chromosomes, n_rots_per_box, dims_all,
+    L, W, H, max_pallets,
+    weights, mlot, rfs, pallet_max_weight, support_ratio,
+    require_centroid,
+    cog_x_min, cog_x_max, cog_y_min, cog_y_max,
+    cog_min_load_frac, cog_active,
+    placements_out_all, n_bins_out,
+):
+    """Batch-decode pop_size chromosomes for cstr mode 3 (layer) in parallel."""
+    cdef Py_ssize_t pop_size = chromosomes.shape[0]
+    cdef i64 n_boxes = n_rots_per_box.shape[0]
+    cdef i64 cL = L, cW = W, cH = H
+    cdef i64 MAX_BINS = max_pallets if max_pallets > 0 else 32
+    cdef double pmw = pallet_max_weight
+    cdef double sr = support_ratio
+    cdef int rc = require_centroid
+    cdef double cxmn = cog_x_min, cxmx = cog_x_max
+    cdef double cymn = cog_y_min, cymx = cog_y_max
+    cdef double cmlf = cog_min_load_frac
+    cdef int cact = cog_active
+
+    bps = np.ascontiguousarray(chromosomes)[:, :n_boxes]
+    orders_np = np.argsort(bps, axis=1).astype(np.int64)
+    cdef const i64[:, ::1] orders = orders_np
+    cdef const i64[::1] nr_v = n_rots_per_box
+    cdef const i64[:, :, ::1] da_v = dims_all
+    cdef const double[::1] w_v = weights
+    cdef const double[::1] mlot_v = mlot
+    cdef const i64[::1] rfs_v = rfs
+    cdef i64[:, :, ::1] po_all = placements_out_all
+    cdef i64[::1] nb_out = n_bins_out
+
+    cdef i64[:, :, :, :, ::1] be_all = np.zeros(
+        (pop_size, MAX_BINS, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef i64[:, ::1] bec_all = np.zeros((pop_size, MAX_BINS), dtype=np.int64)
+    cdef i64[:, ::1] sm_all = np.zeros((pop_size, MAX_BINS), dtype=np.int64)
+    cdef i64[:, ::1] sx_all = np.zeros((pop_size, MAX_BINS), dtype=np.int64)
+    cdef i64[:, :, :, ::1] sc_all = np.zeros(
+        (pop_size, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef double[:, ::1] palw_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
+    cdef double[:, ::1] ptl_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
+    cdef double[:, ::1] psx_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
+    cdef double[:, ::1] psy_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
+
+    cdef Py_ssize_t i
+    with nogil:
+        for i in prange(pop_size, schedule='static'):
+            nb_out[i] = _decode_cstr_layer_loop(
+                orders[i], nr_v, da_v, cL, cW, cH, MAX_BINS,
+                po_all[i],
+                be_all[i], bec_all[i], sm_all[i], sx_all[i], sc_all[i],
+                w_v, mlot_v, rfs_v, pmw, sr, rc,
+                cxmn, cxmx, cymn, cymx, cmlf, cact,
+                palw_all[i], ptl_all[i], psx_all[i], psy_all[i], n_boxes,
+            )
+    return n_bins_out

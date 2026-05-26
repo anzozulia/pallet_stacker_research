@@ -1115,3 +1115,132 @@ def decode_batch_njit_mode(
                 be_all[i], bec_all[i], sc_all[i], n_boxes,
             )
     return n_bins_out
+
+
+# ===========================================================================
+# Phase 5b: batch entry points for the remaining geometric decoders
+# (layer / blocks / precomputed_blocks). Same per-chromosome scratch +
+# prange pattern as Phase 5a.
+# ===========================================================================
+
+
+def decode_batch_layer_njit(
+    chromosomes, n_rots_per_box, dims_all,
+    L, W, H, max_pallets,
+    placements_out_all, n_bins_out,
+):
+    """Batch-decode pop_size chromosomes for mode 3 (layer-build) in parallel."""
+    cdef Py_ssize_t pop_size = chromosomes.shape[0]
+    cdef i64 n_boxes = n_rots_per_box.shape[0]
+    cdef i64 cL = L, cW = W, cH = H
+    cdef i64 MAX_BINS = max_pallets if max_pallets > 0 else 32
+
+    bps = np.ascontiguousarray(chromosomes)[:, :n_boxes]
+    orders_np = np.argsort(bps, axis=1).astype(np.int64)
+    cdef const i64[:, ::1] orders = orders_np
+    cdef const i64[::1] nr_v = n_rots_per_box
+    cdef const i64[:, :, ::1] da_v = dims_all
+    cdef i64[:, :, ::1] po_all = placements_out_all
+    cdef i64[::1] nb_out = n_bins_out
+
+    cdef i64[:, :, :, :, ::1] be_all = np.zeros(
+        (pop_size, MAX_BINS, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef i64[:, ::1] bec_all = np.zeros((pop_size, MAX_BINS), dtype=np.int64)
+    cdef i64[:, ::1] sm_all = np.zeros((pop_size, MAX_BINS), dtype=np.int64)
+    cdef i64[:, ::1] sx_all = np.zeros((pop_size, MAX_BINS), dtype=np.int64)
+    cdef i64[:, :, :, ::1] sc_all = np.zeros(
+        (pop_size, MAX_EMS_C, 2, 3), dtype=np.int64)
+
+    cdef Py_ssize_t i
+    with nogil:
+        for i in prange(pop_size, schedule='static'):
+            nb_out[i] = _layer_loop(
+                orders[i], nr_v, da_v, cL, cW, cH, MAX_BINS,
+                po_all[i],
+                be_all[i], bec_all[i], sm_all[i], sx_all[i], sc_all[i],
+                n_boxes,
+            )
+    return n_bins_out
+
+
+def decode_batch_blocks_njit_mode(
+    chromosomes, n_rots_per_box, dims_all, sku_id_per_box,
+    L, W, H, max_pallets,
+    placements_out_all, n_bins_out, n_skus,
+):
+    """Batch-decode pop_size chromosomes for mode 4 (blocks) in parallel."""
+    cdef Py_ssize_t pop_size = chromosomes.shape[0]
+    cdef i64 n_boxes = n_rots_per_box.shape[0]
+    cdef i64 cL = L, cW = W, cH = H
+    cdef i64 MAX_BINS = max_pallets if max_pallets > 0 else 32
+    cdef i64 cn_skus = n_skus
+
+    bps = np.ascontiguousarray(chromosomes)[:, :n_boxes]
+    orders_np = np.argsort(bps, axis=1).astype(np.int64)
+    cdef const i64[:, ::1] orders = orders_np
+    cdef const i64[::1] nr_v = n_rots_per_box
+    cdef const i64[:, :, ::1] da_v = dims_all
+    cdef const i64[::1] sku_v = sku_id_per_box
+    cdef i64[:, :, ::1] po_all = placements_out_all
+    cdef i64[::1] nb_out = n_bins_out
+
+    cdef i64[:, :, :, :, ::1] be_all = np.zeros(
+        (pop_size, MAX_BINS, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef i64[:, ::1] bec_all = np.zeros((pop_size, MAX_BINS), dtype=np.int64)
+    cdef i64[:, :, :, ::1] sc_all = np.zeros(
+        (pop_size, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef i64[:, ::1] placed_all = np.zeros((pop_size, n_boxes), dtype=np.int64)
+    cdef i64[:, ::1] skur_all = np.zeros((pop_size, cn_skus), dtype=np.int64)
+
+    cdef Py_ssize_t i
+    with nogil:
+        for i in prange(pop_size, schedule='static'):
+            nb_out[i] = _blocks_loop(
+                orders[i], nr_v, da_v, sku_v, cL, cW, cH, MAX_BINS,
+                po_all[i],
+                be_all[i], bec_all[i], sc_all[i],
+                placed_all[i], skur_all[i], n_boxes,
+            )
+    return n_bins_out
+
+
+def decode_batch_precomputed_blocks_njit_mode(
+    chromosomes, n_rots_per_box, dims_all, sku_id_per_box, sku_best_block,
+    L, W, H, max_pallets,
+    placements_out_all, n_bins_out, n_skus,
+):
+    """Batch-decode pop_size chromosomes for mode 5 (precomputed blocks)."""
+    cdef Py_ssize_t pop_size = chromosomes.shape[0]
+    cdef i64 n_boxes = n_rots_per_box.shape[0]
+    cdef i64 cL = L, cW = W, cH = H
+    cdef i64 MAX_BINS = max_pallets if max_pallets > 0 else 32
+    cdef i64 cn_skus = n_skus
+
+    bps = np.ascontiguousarray(chromosomes)[:, :n_boxes]
+    orders_np = np.argsort(bps, axis=1).astype(np.int64)
+    cdef const i64[:, ::1] orders = orders_np
+    cdef const i64[::1] nr_v = n_rots_per_box
+    cdef const i64[:, :, ::1] da_v = dims_all
+    cdef const i64[::1] sku_v = sku_id_per_box
+    cdef const i64[:, ::1] sbb_v = sku_best_block
+    cdef i64[:, :, ::1] po_all = placements_out_all
+    cdef i64[::1] nb_out = n_bins_out
+
+    cdef i64[:, :, :, :, ::1] be_all = np.zeros(
+        (pop_size, MAX_BINS, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef i64[:, ::1] bec_all = np.zeros((pop_size, MAX_BINS), dtype=np.int64)
+    cdef i64[:, :, :, ::1] sc_all = np.zeros(
+        (pop_size, MAX_EMS_C, 2, 3), dtype=np.int64)
+    cdef i64[:, ::1] placed_all = np.zeros((pop_size, n_boxes), dtype=np.int64)
+    cdef i64[:, ::1] skur_all = np.zeros((pop_size, cn_skus), dtype=np.int64)
+
+    cdef Py_ssize_t i
+    with nogil:
+        for i in prange(pop_size, schedule='static'):
+            nb_out[i] = _precomputed_blocks_loop(
+                orders[i], nr_v, da_v, sku_v, sbb_v,
+                cL, cW, cH, MAX_BINS, po_all[i],
+                be_all[i], bec_all[i], sc_all[i],
+                placed_all[i], skur_all[i], n_boxes,
+            )
+    return n_bins_out
