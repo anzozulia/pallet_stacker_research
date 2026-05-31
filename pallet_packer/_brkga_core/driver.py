@@ -19,6 +19,7 @@ different seeds, returns the best result).
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import List, Optional
 
 import numpy as np
@@ -278,7 +279,14 @@ def brkga_pack_v35(
     if use_v2_seed:
         try:
             from ..packer import PalletPacker
-            v2_packer = PalletPacker(pallet, config)
+            # Honor the function-arg max_pallets in the v2 seed/hybrid packer.
+            # PalletPacker reads only config.max_pallets, so without this the
+            # v2 result — which can win the hybrid comparison (Phase 4) and be
+            # returned directly, or be the fallback return — would breach the
+            # cap (verification defect: IND2 with max_pallets=1 -> 4 pallets).
+            # The whole BRKGA path already uses the function arg; align v2 too.
+            v2_config = replace(config, max_pallets=max_pallets)
+            v2_packer = PalletPacker(pallet, v2_config)
             v2_result = v2_packer.pack(boxes)
             if use_multi_decoder:
                 for m in range(n_modes):
