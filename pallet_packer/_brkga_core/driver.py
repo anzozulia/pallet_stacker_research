@@ -25,7 +25,7 @@ from typing import List, Optional
 import numpy as np
 
 from ..models import Box, Pallet, PackerConfig
-from ..packer import PackResult
+from ..packer import PackResult, PalletState
 from ..brkga_v3_fast import _fitness_pallet1
 from .precompute import (
     _NO_LIMIT,
@@ -126,6 +126,24 @@ def brkga_pack_v35(
     if validate_input:
         from ..input_validation import check_packing_input
         check_packing_input(boxes, pallet, max_boxes=None)
+    # Box.group co-location: boxes sharing a non-None group must land on the
+    # same pallet (e.g. LTL groupage — a customer's items stay together). The
+    # decoders are group-unaware, so when more than one pallet is allowed we
+    # assign whole groups to pallets up front and pack each pallet on its own,
+    # where co-location is automatic. Single-pallet solves (max_pallets == 1)
+    # are inherently group-safe and skip this. See _pack_with_groups.
+    if max_pallets > 1 and any(getattr(b, "group", None) is not None
+                               for b in boxes):
+        return _pack_with_groups(
+            boxes, pallet, config,
+            time_limit_s=time_limit_s, max_pallets=max_pallets, seed=seed,
+            population_size=population_size, n_populations=n_populations,
+            patience=patience, n_modes=n_modes,
+            use_multi_decoder=use_multi_decoder, use_v2_seed=use_v2_seed,
+            use_smart_init=use_smart_init, use_local_search=use_local_search,
+            local_search_budget_s=local_search_budget_s, use_lns=use_lns,
+            lns_budget_s=lns_budget_s,
+            use_v2_hybrid_polish=use_v2_hybrid_polish, verbose=verbose)
     # Resolve the use_v2_seed auto-default before any branch. v2 seed gives
     # a feasible-and-anchored baseline that's worth its slow runtime on
     # constrained workloads but actively traps BRKGA in a suboptimal basin
@@ -646,3 +664,117 @@ def brkga_pack_v35(
             return v2_result
         return PackResult(pallets=[], unpacked=list(boxes))
     return best_result
+
+
+def _pack_with_groups(
+    boxes: List[Box],
+    pallet: Pallet,
+    config: PackerConfig,
+    *,
+    time_limit_s: float,
+    max_pallets: int,
+    seed: int,
+    population_size: int,
+    n_populations: int,
+    patience: int,
+    n_modes: int,
+    use_multi_decoder: bool,
+    use_v2_seed: Optional[bool],
+    use_smart_init: bool,
+    use_local_search: bool,
+    local_search_budget_s: float,
+    use_lns: bool,
+    lns_budget_s: float,
+    use_v2_hybrid_polish: bool,
+    verbose: bool,
+) -> PackResult:
+    """Pack with the Box.group co-location constraint guaranteed.
+
+    Boxes sharing a non-None ``group`` must all end up on the same pallet. The
+    geometric / constraint decoders assign boxes to bins purely by fit and are
+    group-unaware, so we enforce co-location structurally:
+
+      1. Bundle the cargo — each group is one indivisible unit; ungrouped boxes
+         are free singletons.
+      2. Assign whole bundles to pallets first-fit-decreasing by volume (a
+         group never spans two pallets by construction; a bundle bigger than a
+         pallet just lands alone and its overflow becomes unpacked — still no
+         split).
+      3. Pack each pallet independently with a single-container solve, where
+         co-location is automatic, and concatenate the results.
+
+    The volume FILL factor leaves headroom for 3D packing inefficiency; any
+    overflow on a pallet spills to ``unpacked`` (never to another pallet, so
+    the co-location invariant holds even when capacity binds).
+    """
+    groups: "dict" = {}
+    group_order: List = []
+    singletons: List[Box] = []
+    for b in boxes:
+        g = getattr(b, "group", None)
+        if g is None:
+            singletons.append(b)
+        else:
+            if g not in groups:
+                groups[g] = []
+                group_order.append(g)
+            groups[g].append(b)
+
+    bundles: List[List[Box]] = [groups[g] for g in group_order]
+    bundles.extend([bx] for bx in singletons)
+
+    cap = float(pallet.length * pallet.width * pallet.height)
+
+    def _vol(bundle: List[Box]) -> float:
+        return sum(float(bx.volume) for bx in bundle)
+
+    bundles.sort(key=_vol, reverse=True)
+
+    FILL = 0.85
+    budget = cap * FILL
+    assigned: List[dict] = []
+    for bundle in bundles:
+        v = _vol(bundle)
+        target = None
+        for a in assigned:
+            if a["vol"] + v <= budget:
+                target = a
+                break
+        if target is None:
+            if len(assigned) < max_pallets:
+                assigned.append({"boxes": [], "vol": 0.0})
+                target = assigned[-1]
+            elif assigned:
+                # At the pallet cap: drop onto the emptiest pallet (best effort).
+                # Whatever doesn't fit becomes unpacked — never a group split.
+                target = min(assigned, key=lambda a: a["vol"])
+        if target is None:
+            continue
+        target["boxes"].extend(bundle)
+        target["vol"] += v
+
+    non_empty = [a for a in assigned if a["boxes"]]
+    n_used = max(1, len(non_empty))
+    per_time = max(1.0, float(time_limit_s) / n_used)
+
+    out_pallets: List[PalletState] = []
+    out_unpacked: List[Box] = []
+    for idx, a in enumerate(non_empty):
+        res = brkga_pack_v35(
+            a["boxes"], pallet, config,
+            time_limit_s=per_time, max_pallets=1, seed=seed + idx * 31,
+            population_size=population_size, n_populations=n_populations,
+            patience=patience, n_modes=n_modes,
+            use_multi_decoder=use_multi_decoder, use_v2_seed=use_v2_seed,
+            use_smart_init=use_smart_init, use_local_search=use_local_search,
+            local_search_budget_s=local_search_budget_s, use_lns=use_lns,
+            lns_budget_s=lns_budget_s,
+            use_v2_hybrid_polish=use_v2_hybrid_polish, verbose=verbose,
+        )
+        out_pallets.extend(res.pallets)
+        out_unpacked.extend(res.unpacked)
+
+    # Re-id pallets sequentially so the concatenated result has unique ids.
+    for i, st in enumerate(out_pallets):
+        st.pallet_id = f"P{i + 1:03d}"
+    return PackResult(pallets=out_pallets, unpacked=out_unpacked)
