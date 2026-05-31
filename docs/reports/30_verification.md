@@ -63,6 +63,33 @@ Decisions taken after reviewing the findings, and what each one closes:
 
 None are research-grade; this is an engineering pass, not a redesign.
 
+**Status (post-verification fixes):**
+
+- ✅ **Item 1 — block-decoder constraint-awareness** — DONE (commit `ca8d813`).
+  Part A: `mlot`/`rfs` in the SKU key. Part B: per-box support/load check in the
+  block decoder (mirrored to the Numba reference). Constrained ladder + 10
+  industry cases: 0 errors (was 18–64); geometric BR bit-identical; backends
+  re-verified bit-equivalent (2670 comparisons, 0 mismatches).
+- ✅ **Item 2 — always-on stability** — DONE (commit `048a83c`).
+  `support_ratio`/centroid/CoG/overhang decoupled from `has_constraints` and
+  driven from config (`use_cstr_path`). Weightless input now enforces support:
+  0 validator errors at every support level; enforcement binds (BR1#1 weightless
+  util 91.96% at sr=0 → 77.11% at sr=0.8). `use_v2_seed` kept keyed on real
+  weight/load constraints (Phase 7a basin protected).
+- ⏳ Items 3–6 (input-validation gate, hard deadline, `max_pallets` leak,
+  `Box.group`) — pending.
+
+> **⚠️ Research-narrative flag discovered during the D2 fix.** Because support was
+> never enforced on weightless data, the published BR utilization numbers (and
+> the "beats 2013 SOTA on BR3/5/7" claim in `29_final_audit.md`) are **measured
+> without support enforcement**. If the literature baselines (G&R 2013, Lim 2013)
+> assume full support — as the `geometric_only_config` docstring asserts
+> Bischoff–Ratcliff does — then our BR util is **inflated** (BR1#1 drops 91.96% →
+> 77.11% once support_ratio=0.8 is enforced). The academic comparison may be
+> apples-to-oranges. This does **not** affect the service (which enforces
+> stability), but the SOTA claim needs an honest re-measurement before it's relied
+> upon.
+
 ---
 
 ## 2. What is solid (the port did its job)
