@@ -182,26 +182,37 @@ def brkga_pack_v35(
         boxes, sku_id_per_box, n_rots_arr, dims_all, L, W, H, k_top=8)
     weights_arr, mlot_arr, rfs_arr, pallet_max_weight, has_constraints = \
         precompute_constraint_arrays(boxes, pallet)
-    # Support-ratio comes from the PackerConfig (e.g. 0.8 default, 1.0 in
-    # BR geometric-only). Only enforced when has_constraints is True (i.e.
-    # workload has finite weights or load limits). On pure-geometric BR
-    # data has_constraints=False so support_ratio is left at 0 (disabled),
-    # preserving the BR throughput.
-    support_ratio_value = (
-        float(config.support_ratio) if has_constraints else 0.0)
-    # v3.12 config-derived scalars: centroid + CoG envelope + overhang.
-    # All gated by has_constraints — on geometric BR the JIT short-circuits.
-    if has_constraints:
-        require_centroid_value = (
-            1 if config.require_centroid_supported else 0)
-        cog_x_min_value, cog_x_max_value, \
-            cog_y_min_value, cog_y_max_value, \
-            cog_min_load_frac_value, _cog_active_bool = \
-            precompute_cog_envelope(pallet, config)
+    # Physical stability (support_ratio / centroid), the CoG envelope, and
+    # pallet overhang are requirements of the CONFIG + PALLET, not of the
+    # cargo's weights — a weightless box can still float. Previously all of
+    # them were gated by has_constraints, so a weightless workload silently
+    # packed with NO support check (floating placements the validator rejects;
+    # see docs/reports/30_verification.md, defect D2). Drive them from config
+    # and route through the constraint-aware decoders whenever ANY physical
+    # requirement is active — independent of whether the load carries weight.
+    cog_x_min_value, cog_x_max_value, \
+        cog_y_min_value, cog_y_max_value, \
+        cog_min_load_frac_value, _cog_active_bool = \
+        precompute_cog_envelope(pallet, config)
+    stability_active = (float(config.support_ratio) > 0.0
+                        or bool(config.require_centroid_supported))
+    overhang_active = (bool(config.allow_pallet_overhang)
+                       and float(pallet.max_overhang) > 0.0)
+    # use_cstr_path drives the constraint-aware decoder path (support, centroid,
+    # CoG, load, weight). Kept DISTINCT from has_constraints on purpose: the
+    # v2-seed auto-default (above) must stay keyed on real weight/load limits,
+    # because v2-seeding traps pure-geometric workloads in a worse basin
+    # (Phase 7a). Stability-only workloads must NOT auto-enable v2-seed.
+    use_cstr_path = bool(has_constraints or stability_active
+                         or _cog_active_bool or overhang_active)
+    if use_cstr_path:
+        support_ratio_value = float(config.support_ratio)
+        require_centroid_value = 1 if config.require_centroid_supported else 0
         cog_active_value = 1 if _cog_active_bool else 0
         max_overhang_value = (
             float(pallet.max_overhang) if config.allow_pallet_overhang else 0.0)
     else:
+        support_ratio_value = 0.0
         require_centroid_value = 0
         cog_x_min_value, cog_x_max_value = -1e18, 1e18
         cog_y_min_value, cog_y_max_value = -1e18, 1e18
@@ -221,7 +232,7 @@ def brkga_pack_v35(
                 mode_cdf=adaptive_state["mode_cdf"],
                 weights=weights_arr, mlot=mlot_arr,
                 pallet_max_weight=pallet_max_weight,
-                has_constraints=has_constraints,
+                has_constraints=use_cstr_path,
                 support_ratio=support_ratio_value,
                 rfs=rfs_arr,
                 require_centroid=require_centroid_value,
@@ -236,7 +247,7 @@ def brkga_pack_v35(
                 c, b, p, cfg, na, da, mode=0, max_pallets=max_pallets,
                 weights=weights_arr, mlot=mlot_arr,
                 pallet_max_weight=pallet_max_weight,
-                has_constraints=has_constraints,
+                has_constraints=use_cstr_path,
                 support_ratio=support_ratio_value,
                 rfs=rfs_arr,
                 require_centroid=require_centroid_value,
@@ -432,7 +443,7 @@ def brkga_pack_v35(
                 mode_cdf=adaptive_state["mode_cdf"],
                 weights=weights_arr, mlot=mlot_arr,
                 pallet_max_weight=pallet_max_weight,
-                has_constraints=has_constraints,
+                has_constraints=use_cstr_path,
                 support_ratio=support_ratio_value,
                 rfs=rfs_arr,
                 require_centroid=require_centroid_value,
@@ -516,7 +527,7 @@ def brkga_pack_v35(
             mode_cdf=adaptive_state["mode_cdf"],
             weights=weights_arr, mlot=mlot_arr,
             pallet_max_weight=pallet_max_weight,
-            has_constraints=has_constraints,
+            has_constraints=use_cstr_path,
             support_ratio=support_ratio_value,
             rfs=rfs_arr,
             require_centroid=require_centroid_value,
@@ -548,7 +559,7 @@ def brkga_pack_v35(
             mode_cdf=adaptive_state["mode_cdf"],
             weights=weights_arr, mlot=mlot_arr,
             pallet_max_weight=pallet_max_weight,
-            has_constraints=has_constraints,
+            has_constraints=use_cstr_path,
             support_ratio=support_ratio_value,
             rfs=rfs_arr,
             require_centroid=require_centroid_value,
@@ -581,7 +592,7 @@ def brkga_pack_v35(
             mode_cdf=adaptive_state["mode_cdf"],
             weights=weights_arr, mlot=mlot_arr,
             pallet_max_weight=pallet_max_weight,
-            has_constraints=has_constraints,
+            has_constraints=use_cstr_path,
             support_ratio=support_ratio_value,
             rfs=rfs_arr,
             require_centroid=require_centroid_value,

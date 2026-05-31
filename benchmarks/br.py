@@ -56,18 +56,27 @@ def geometric_only_config(
     brkga_population_size: int = 16, brkga_generations: int = 4,
     max_pallets: Optional[int] = 1,
 ) -> PackerConfig:
-    """Config with all physical constraints relaxed.
+    """Config with all physical constraints relaxed (pure volume objective).
 
-    - support_ratio = 1.0 — Bischoff–Ratcliff assumes full support (no overhang
-      of one box over another).
+    - support_ratio = 0.0 — support is NOT enforced for the academic volume
+      benchmark. (Historically this config requested 1.0, but the driver gated
+      support enforcement on has_constraints, which is False for weightless BR
+      data — so support was never actually enforced. Now that stability is
+      config-driven (D2), 0.0 makes the long-standing behaviour explicit and
+      keeps the published util numbers stable.) NOTE: if the literature
+      baselines we compare against DO assume full support, our BR util is
+      inflated by allowing partial-support placements; enforcing support_ratio
+      would lower it. That is a separate research decision — see
+      docs/reports/30_verification.md.
+    - require_centroid_supported = False — same rationale.
     - enforce_load_bearing = False — boxes are weightless geometrically.
     - cog_envelope_fraction = 1.0 — disables CoG check (envelope = full pallet).
     - cog_check_min_load_fraction = 1.0 — never trigger CoG either way.
     - allow_pallet_overhang = False — BR strictly inside container.
     """
     return PackerConfig(
-        support_ratio=1.0,
-        require_centroid_supported=True,
+        support_ratio=0.0,
+        require_centroid_supported=False,
         allow_pallet_overhang=False,
         heavy_on_bottom=False,                # weights are zero anyway
         cog_envelope_fraction=1.0,
