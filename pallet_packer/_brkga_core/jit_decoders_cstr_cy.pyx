@@ -541,7 +541,8 @@ cdef i64 _decode_cstr_blocks_loop(
     cdef i64 kk, ll, mm, kk2, ll2, mm2, applied, applied2, blk_count
     cdef i64 px, py, pz
     cdef double box_weight, box_mlot, cap_remain, bottom_w, block_total_w
-    cdef bint block_committed
+    cdef bint block_committed, bottom_ok
+    cdef i64 bx_kk, bx_ll, bx_px, bx_py
 
     # Count remaining boxes per SKU.
     for i in range(n):
@@ -606,24 +607,37 @@ cdef i64 _decode_cstr_blocks_loop(
                     k, l, m, box_weight, box_mlot, cap_remain,
                     &k, &l, &m) == 0:
                 continue
-            # Phase 2c: external load/support check on bottom layer.
-            bottom_w = <double>(k * l) * box_weight
-            if not _ck_load_on_top(
-                    placements_out, dims_all, bps_order, mlot,
-                    placement_top_loads, n,
-                    b, best_x, best_y, best_z,
-                    k * dx, l * dy, dz, bottom_w, support_ratio,
-                    require_centroid, <int>rfs[box_idx]):
+            # Phase 2c: PER-bottom-box support + load check. The validator
+            # checks every box individually, so a block-aggregate check is
+            # wrong: a 3x1 bottom layer can average >= support_ratio while a
+            # corner box sits at 0.4 -> the validator floats it. Check each of
+            # the k*l bottom boxes at its own footprint; if any fails, fall
+            # back to a single box at the DFTRC position. Each box rests on the
+            # already-placed layer below (the block's own bottom boxes share
+            # z=best_z and don't support each other), so per-box is exact.
+            bottom_ok = True
+            for bx_ll in range(l):
+                for bx_kk in range(k):
+                    bx_px = best_x + bx_kk * dx
+                    bx_py = best_y + bx_ll * dy
+                    if not _ck_load_on_top(
+                            placements_out, dims_all, bps_order, mlot,
+                            placement_top_loads, n,
+                            b, bx_px, bx_py, best_z,
+                            dx, dy, dz, box_weight, support_ratio,
+                            require_centroid, <int>rfs[box_idx]):
+                        bottom_ok = False
+                        break
+                if not bottom_ok:
+                    break
+            if not bottom_ok:
                 # Shrink block to (1, 1, m) and retry; if still fails, skip.
                 k = 1; l = 1
-                if k * l * m < 1:
-                    continue
-                bottom_w = box_weight
                 if not _ck_load_on_top(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, best_x, best_y, best_z,
-                        dx, dy, dz, bottom_w, support_ratio,
+                        dx, dy, dz, box_weight, support_ratio,
                         require_centroid, <int>rfs[box_idx]):
                     continue
             # Phase 2d: CoG envelope (block as point mass at bottom centroid).

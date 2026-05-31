@@ -502,25 +502,33 @@ def decode_blocks_njit_mode_cstr(
                 k, l, m, box_weight, box_mlot, cap_remain)
             if k * l * m < 1:
                 continue  # can't even fit a single box weight-wise
-            # Phase 2c: external load/support check on the bottom layer.
-            # Bottom layer footprint = k*dx × l*dy at z; weight = k*l * box_weight.
-            bottom_w = float(k * l) * box_weight
-            if not _check_load_on_top_njit(
-                    placements_out, dims_all, bps_order, mlot,
-                    placement_top_loads, n,
-                    b, best_x, best_y, best_z,
-                    k * dx, l * dy, dz, bottom_w, support_ratio,
-                    require_centroid, rfs[box_idx]):
+            # Phase 2c: PER-bottom-box support + load check. The validator
+            # checks every box individually, so a block-aggregate check is
+            # wrong (a 3x1 bottom layer can average >= support_ratio while a
+            # corner box sits at 0.4 -> the validator floats it). Check each of
+            # the k*l bottom boxes at its own footprint. Mirrors the Cython
+            # port's _decode_cstr_blocks_loop (kept bit-equivalent on purpose).
+            bottom_ok = True
+            for bx_ll in range(l):
+                for bx_kk in range(k):
+                    if not _check_load_on_top_njit(
+                            placements_out, dims_all, bps_order, mlot,
+                            placement_top_loads, n,
+                            b, best_x + bx_kk * dx, best_y + bx_ll * dy, best_z,
+                            dx, dy, dz, box_weight, support_ratio,
+                            require_centroid, rfs[box_idx]):
+                        bottom_ok = False
+                        break
+                if not bottom_ok:
+                    break
+            if not bottom_ok:
                 # Try shrinking block (l, k → 1) before giving up on bin.
                 k, l = 1, 1
-                if k * l * m < 1:
-                    continue
-                bottom_w = box_weight
                 if not _check_load_on_top_njit(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, best_x, best_y, best_z,
-                        dx, dy, dz, bottom_w, support_ratio,
+                        dx, dy, dz, box_weight, support_ratio,
                         require_centroid, rfs[box_idx]):
                     continue  # next bin
             # Phase 2d: CoG envelope check (block treated as point mass at

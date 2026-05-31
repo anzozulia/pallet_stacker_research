@@ -38,10 +38,23 @@ def precompute_box_dims_and_sku(boxes: List[Box]) -> tuple:
     sku_to_id: dict = {}
     for i, b in enumerate(boxes):
         # Key ignores rotation flags - same SKU = same dimensions + weight
-        # plus same rotation set (so rotations match in the block)
+        # plus same rotation set (so rotations match in the block).
+        #
+        # Also key on max_load_on_top + requires_full_support: block-building
+        # stacks same-SKU units into a composite grid using a SINGLE (seed)
+        # box's load limit. If a fragile box (max_load_on_top=0) shared a SKU
+        # with a sturdy box of identical size, the block would stack onto the
+        # fragile one and crush it (verified: docs/reports/30_verification.md).
+        # Keying on mlot/rfs guarantees every block has a uniform load limit,
+        # which is exactly what the block decoder's stack-height cap assumes.
+        # Geometric/weightless workloads have mlot=inf + rfs=False for every
+        # box, so the SKU partition is unchanged -> bit-identical there.
         rot_key = tuple(sorted(r.name for r in b.allowed_rotations))
+        m = getattr(b, 'max_load_on_top', float('inf'))
+        mlot_key = round(m, 6) if (m is not None and math.isfinite(m)) else float('inf')
+        rfs_key = 1 if getattr(b, 'requires_full_support', False) else 0
         key = (round(b.length, 6), round(b.width, 6), round(b.height, 6),
-               round(b.weight, 6), rot_key)
+               round(b.weight, 6), mlot_key, rfs_key, rot_key)
         if key not in sku_to_id:
             sku_to_id[key] = len(sku_to_id)
         sku_id_per_box[i] = sku_to_id[key]
