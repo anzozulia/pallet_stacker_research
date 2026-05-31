@@ -42,6 +42,12 @@ from .models import (
 )
 from .packer import PackResult, PalletState, PalletPacker
 from .validate import validate
+from .input_validation import (
+    validate_packing_input,
+    check_packing_input,
+    PackingInputError,
+    DEFAULT_MAX_BOXES,
+)
 from .io import to_json, save_json
 
 __all__ = [
@@ -58,6 +64,10 @@ __all__ = [
     "PalletState",
     "PalletPacker",
     "validate",
+    "validate_packing_input",
+    "check_packing_input",
+    "PackingInputError",
+    "DEFAULT_MAX_BOXES",
     "to_json",
     "save_json",
 ]

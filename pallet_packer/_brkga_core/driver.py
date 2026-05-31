@@ -112,9 +112,19 @@ def brkga_pack_v35(
     # Multi-restart: run K times with different seeds, take best.
     # Reduces variance at the cost of less compute per run.
     n_restarts: int = 1,
+    # Opt-in boundary check. When True, raises PackingInputError on malformed
+    # input (non-integer/negative dims, NaN weight cap, etc.) instead of
+    # silently producing an invalid packing. Off by default to preserve the
+    # behaviour of existing callers; the service layer passes True. The
+    # box-count cap is a deployment concern, so it is NOT applied here
+    # (max_boxes=None) — callers enforce it via check_packing_input directly.
+    validate_input: bool = False,
     verbose: bool = False,
 ) -> PackResult:
     """v3.5: hybrid BRKGA with all quality improvements."""
+    if validate_input:
+        from ..input_validation import check_packing_input
+        check_packing_input(boxes, pallet, max_boxes=None)
     # Resolve the use_v2_seed auto-default before any branch. v2 seed gives
     # a feasible-and-anchored baseline that's worth its slow runtime on
     # constrained workloads but actively traps BRKGA in a suboptimal basin
