@@ -21,3 +21,8 @@ dist/
 results/*.md
 /packing_result.json
 .claude/
+
+# The API microservice is a SEPARATE project with its own git repo. It lives
+# here for convenience during development but is intentionally excluded from
+# the core algorithm repo. See pallet_packer_api_service/docs/.
+pallet_packer_api_service/
