@@ -88,7 +88,10 @@ None are research-grade; this is an engineering pass, not a redesign.
 > 77.11% once support_ratio=0.8 is enforced). The academic comparison may be
 > apples-to-oranges. This does **not** affect the service (which enforces
 > stability), but the SOTA claim needs an honest re-measurement before it's relied
-> upon.
+> upon. **RESOLVED — see [`31_br_honest_remeasure.md`](31_br_honest_remeasure.md):**
+> the claim was inflated. Honest full-support n=100 puts us ~1.7 pp behind G&R
+> 2013 on average (BR1 −8.5, BR3 −1.3, BR5 +0.8, BR7 +1.9); 1200/1200 packings
+> validator-clean.
 
 ---
 

@@ -13,6 +13,17 @@ remains.
 > structurally inescapable by single-chromosome local search — it
 > requires a fundamentally different decoder or restart strategy.
 
+> ⚠️ **CORRECTION (superseded by [`31_br_honest_remeasure.md`](31_br_honest_remeasure.md)).**
+> The "beats 2013 SOTA by 3–7 pp on BR3/5/7" claim above is **inflated and does
+> not hold.** It compared our **no-support** packings (~92 %) against the
+> literature's **full-support** baselines — apples-to-oranges (defect D2:
+> support enforcement was silently disabled on weightless BR data). On the
+> honest like-for-like full-support comparison (n=100, validator-clean) we are
+> **~1.7 pp behind G&R 2013 on average**: BR1 −8.5, BR3 −1.3, BR5 +0.8, BR7
+> +1.9. We hold our own only on the heterogeneous sets (BR5/BR7). The
+> throughput, determinism, and correctness findings in this audit stand; only
+> the SOTA-comparison numbers are corrected.
+
 ---
 
 ## 1. Three-way result comparison
