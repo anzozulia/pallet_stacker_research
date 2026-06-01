@@ -1,0 +1,112 @@
+[
+ {
+  "case_name": "IND1 E-commerce fulfillment (120 mixed)",
+  "n_boxes": 120,
+  "config": "v3.10",
+  "pallets_used": 4,
+  "unpacked": 24,
+  "util_pallet1": 0.8858333333333334,
+  "util_total": 0.22333333333333333,
+  "runtime_s": 12.887992858886719,
+  "validator_errors": 0
+ },
+ {
+  "case_name": "IND2 Pharma distribution (200 all-fragile)",
+  "n_boxes": 200,
+  "config": "v3.10",
+  "pallets_used": 4,
+  "unpacked": 0,
+  "util_pallet1": 0.0636,
+  "util_total": 0.06,
+  "runtime_s": 25.406800270080566,
+  "validator_errors": 0
+ },
+ {
+  "case_name": "IND3 Furniture/appliances (15 large, tall pallet)",
+  "n_boxes": 15,
+  "config": "v3.10",
+  "pallets_used": 5,
+  "unpacked": 3,
+  "util_pallet1": 0.5570833333333334,
+  "util_total": 0.29168333333333335,
+  "runtime_s": 4.593877077102661,
+  "validator_errors": 0
+ },
+ {
+  "case_name": "IND4 Beverage cases (44, weight-binding)",
+  "n_boxes": 44,
+  "config": "v3.10",
+  "pallets_used": 1,
+  "unpacked": 0,
+  "util_pallet1": 0.6916666666666667,
+  "util_total": 0.6916666666666667,
+  "runtime_s": 5.433582305908203,
+  "validator_errors": 0
+ },
+ {
+  "case_name": "IND5 Retail order 4-SKU (150 boxes)",
+  "n_boxes": 150,
+  "config": "v3.10",
+  "pallets_used": 2,
+  "unpacked": 0,
+  "util_pallet1": 0.9294444444444444,
+  "util_total": 0.5327777777777778,
+  "runtime_s": 15.016183376312256,
+  "validator_errors": 0
+ },
+ {
+  "case_name": "IND6 LTL groupage (3 customers, 43 boxes)",
+  "n_boxes": 43,
+  "config": "v3.10",
+  "pallets_used": 1,
+  "unpacked": 0,
+  "util_pallet1": 0.3918055555555556,
+  "util_total": 0.3918055555555556,
+  "runtime_s": 5.775542497634888,
+  "validator_errors": 0
+ },
+ {
+  "case_name": "IND7 Electronics warehouse (150 mixed)",
+  "n_boxes": 150,
+  "config": "v3.10",
+  "pallets_used": 3,
+  "unpacked": 20,
+  "util_pallet1": 0.47983333333333333,
+  "util_total": 0.19494444444444445,
+  "runtime_s": 15.106696367263794,
+  "validator_errors": 0
+ },
+ {
+  "case_name": "IND8 Automotive parts (60 heavy heterogeneous)",
+  "n_boxes": 60,
+  "config": "v3.10",
+  "pallets_used": 4,
+  "unpacked": 0,
+  "util_pallet1": 0.5526852627777777,
+  "util_total": 0.19667648055555556,
+  "runtime_s": 15.195202112197876,
+  "validator_errors": 0
+ },
+ {
+  "case_name": "IND9 Document shipping (100 banker boxes)",
+  "n_boxes": 100,
+  "config": "v3.10",
+  "pallets_used": 2,
+  "unpacked": 0,
+  "util_pallet1": 0.855,
+  "util_total": 0.7916666666666666,
+  "runtime_s": 10.774824857711792,
+  "validator_errors": 0
+ },
+ {
+  "case_name": "IND10 Cold-chain reefer (80 insulated)",
+  "n_boxes": 80,
+  "config": "v3.10",
+  "pallets_used": 2,
+  "unpacked": 0,
+  "util_pallet1": 0.9541666666666667,
+  "util_total": 0.5208333333333334,
+  "runtime_s": 10.099058389663696,
+  "validator_errors": 0
+ }
+]
