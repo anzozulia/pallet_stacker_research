@@ -18,6 +18,7 @@ different seeds, returns the best result).
 """
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import replace
 from typing import List, Optional
@@ -723,26 +724,51 @@ def _pack_with_groups(
     bundles: List[List[Box]] = [groups[g] for g in group_order]
     bundles.extend([bx] for bx in singletons)
 
-    cap = float(pallet.length * pallet.width * pallet.height)
-
-    def _vol(bundle: List[Box]) -> float:
-        return sum(float(bx.volume) for bx in bundle)
-
-    bundles.sort(key=_vol, reverse=True)
-
+    # First-fit-decreasing assignment of whole bundles to pallets, constrained
+    # on THREE budgets — not volume alone. A volume-only proxy badly
+    # over-estimates capacity and dumps groups onto too few pallets (spilling
+    # boxes to unpacked while allowed pallets sit empty) whenever:
+    #   - weight binds (heavy low-volume groups), or
+    #   - boxes are non-stackable (fragile, max_load_on_top=0 -> single layer,
+    #     so they consume FLOOR area, not full container volume).
+    # Tracking volume + weight + floor-area per pallet fixes both. FILL leaves
+    # headroom for 3D packing inefficiency; any residual overflow spills to
+    # unpacked (never to another pallet -> co-location invariant preserved).
     FILL = 0.85
-    budget = cap * FILL
+    cap_vol = float(pallet.length * pallet.width * pallet.height) * FILL
+    cap_floor = float(pallet.length * pallet.width) * FILL
+    _pmw = getattr(pallet, "max_weight", math.inf)
+    cap_wt = float(_pmw) if (_pmw is not None and math.isfinite(_pmw)) else math.inf
+
+    def _metrics(bundle: List[Box]):
+        vol = wt = floor = 0.0
+        for bx in bundle:
+            vol += float(bx.volume)
+            w = float(getattr(bx, "weight", 0.0) or 0.0)
+            wt += w
+            m = getattr(bx, "max_load_on_top", math.inf)
+            mf = float(m) if m is not None else math.inf
+            # Unstackable (nothing may rest on top, or it can't bear even one
+            # peer) -> it needs its own floor footprint (smallest face).
+            if mf <= 0.0 or (math.isfinite(mf) and mf < w):
+                l, ww, h = float(bx.length), float(bx.width), float(bx.height)
+                floor += min(l * ww, l * h, ww * h)
+        return vol, wt, floor
+
+    scored = [( _metrics(b), b) for b in bundles]
+    scored.sort(key=lambda t: t[0][0], reverse=True)   # by volume desc
+
     assigned: List[dict] = []
-    for bundle in bundles:
-        v = _vol(bundle)
+    for (v, wt, fl), bundle in scored:
         target = None
         for a in assigned:
-            if a["vol"] + v <= budget:
+            if (a["vol"] + v <= cap_vol and a["wt"] + wt <= cap_wt
+                    and a["floor"] + fl <= cap_floor):
                 target = a
                 break
         if target is None:
             if len(assigned) < max_pallets:
-                assigned.append({"boxes": [], "vol": 0.0})
+                assigned.append({"boxes": [], "vol": 0.0, "wt": 0.0, "floor": 0.0})
                 target = assigned[-1]
             elif assigned:
                 # At the pallet cap: drop onto the emptiest pallet (best effort).
@@ -752,6 +778,8 @@ def _pack_with_groups(
             continue
         target["boxes"].extend(bundle)
         target["vol"] += v
+        target["wt"] += wt
+        target["floor"] += fl
 
     non_empty = [a for a in assigned if a["boxes"]]
     n_used = max(1, len(non_empty))
