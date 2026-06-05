@@ -52,7 +52,8 @@ def find_best_wall_njit(
         y = ey_min
         z = ez_min
         yz = (W - y - dy) * (W - y - dy) + (H - z - dz) * (H - z - dz)
-        if x < best_x or (x == best_x and yz > best_yz):
+        # Floor-first: prefer lower z, then the existing wall criterion.
+        if best_idx == -1 or z < bz or (z == bz and (x < best_x or (x == best_x and yz > best_yz))):
             best_x = x
             best_yz = yz
             best_idx = i
@@ -90,7 +91,8 @@ def find_best_corner_njit(
         if (ez_max - ez_min) < dz:
             continue
         s = ex_min + ey_min + ez_min
-        if s < best_sum:
+        # Floor-first: prefer lower z, then the existing corner (min-sum) criterion.
+        if best_idx == -1 or ez_min < bz or (ez_min == bz and s < best_sum):
             best_sum = s
             best_idx = i
             bx, by, bz = ex_min, ey_min, ez_min
@@ -136,7 +138,8 @@ def find_best_in_slab_njit(
         y = ey_min
         z = ez_min
         yz = (W - y - dy) * (W - y - dy) + (H - z - dz) * (H - z - dz)
-        if yz > best_yz:
+        # Floor-first: prefer lower z, then the existing slab (max-yz) criterion.
+        if best_idx == -1 or z < bz or (z == bz and yz > best_yz):
             best_yz = yz
             best_idx = i
             bx, by, bz = x, y, z

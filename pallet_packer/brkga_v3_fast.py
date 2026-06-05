@@ -60,7 +60,8 @@ def find_best_dftrc_njit(
         d_sq = ((L - x - dx) * (L - x - dx)
                 + (W - y - dy) * (W - y - dy)
                 + (H - z - dz) * (H - z - dz))
-        if d_sq > best_score:
+        # Floor-first: prefer lower z, then the existing DFTRC criterion.
+        if best_idx == -1 or z < bz or (z == bz and d_sq > best_score):
             best_score = d_sq
             best_idx = i
             bx, by, bz = x, y, z
