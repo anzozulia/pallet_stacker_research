@@ -509,9 +509,12 @@ cdef void _find_best_block_at_pos(
     EMS containing the single-box footprint, with k*l*m <= max_count.
     Always returns at least (1, 1, 1).
     """
-    cdef i64 best_k = 1, best_l = 1, best_m = 1, best_count = 1
+    # Floor-first block shape — see find_best_block_at_pos_njit in
+    # jit_decoders_geom.py for the rationale (bit-identical twin): prefer the
+    # largest floor FOOTPRINT (k*l), then the tallest stack (m) within it.
+    cdef i64 best_k = 1, best_l = 1, best_m = 1, best_fp = 1, best_count = 1
     cdef i64 ei, ex_min, ey_min, ez_min, ex_max, ey_max, ez_max
-    cdef i64 max_k, max_l, max_m, k, l, m, count
+    cdef i64 max_k, max_l, max_m, k, l, m, fp, count
     for ei in range(n_ems):
         ex_min = emss[ei, 0, 0]
         ey_min = emss[ei, 0, 1]
@@ -534,17 +537,19 @@ cdef void _find_best_block_at_pos(
             if k > max_count:
                 break
             for l in range(1, max_l + 1):
-                if k * l > max_count:
+                fp = k * l
+                if fp > max_count:
                     break
-                for m in range(1, max_m + 1):
-                    count = k * l * m
-                    if count > max_count:
-                        break
-                    if count > best_count:
-                        best_count = count
-                        best_k = k
-                        best_l = l
-                        best_m = m
+                m = max_m
+                if fp * m > max_count:
+                    m = max_count // fp
+                count = fp * m
+                if fp > best_fp or (fp == best_fp and count > best_count):
+                    best_fp = fp
+                    best_count = count
+                    best_k = k
+                    best_l = l
+                    best_m = m
     out_k[0] = best_k
     out_l[0] = best_l
     out_m[0] = best_m

@@ -231,10 +231,20 @@ def find_best_block_at_pos_njit(
     also contains the box at (x, y, z). So we iterate over candidate EMSs
     and within each find the max (k, l, m) that fits AND respects max_count.
     """
+    # Floor-first block shape: prefer the largest floor FOOTPRINT (k*l), then
+    # the tallest stack (m) that fits within that footprint and the available
+    # same-SKU count. Building complete floor layers before stacking keeps
+    # under-filled pallets flat instead of corner-towered. This is box-count-
+    # neutral in the dense regime: max_m does not depend on (k, l), so the full
+    # footprint reaches the same maximum count as any tower whenever the box
+    # count is not the binding limit. It only trades count for floor-spread
+    # when boxes are scarce relative to the pallet — exactly the under-filled
+    # case the user hit (10 boxes piling into a 2x5 tower on a tall pallet).
     best_k = 1
     best_l = 1
     best_m = 1
-    best_count = 1
+    best_fp = 1       # footprint (k*l) of the current best
+    best_count = 1    # k*l*m of the current best (tiebreak within a footprint)
     for ei in range(n_ems):
         ex_min = emss[ei, 0, 0]
         ey_min = emss[ei, 0, 1]
@@ -253,23 +263,25 @@ def find_best_block_at_pos_njit(
         max_m = (ez_max - z) // dz
         if max_k < 1 or max_l < 1 or max_m < 1:
             continue
-        # Enumerate (k, l, m). The triple loop is at most max_count
-        # iterations after the count guard kicks in.
         for k in range(1, max_k + 1):
             if k > max_count:
                 break
             for l in range(1, max_l + 1):
-                if k * l > max_count:
+                fp = k * l
+                if fp > max_count:
                     break
-                for m in range(1, max_m + 1):
-                    count = k * l * m
-                    if count > max_count:
-                        break
-                    if count > best_count:
-                        best_count = count
-                        best_k = k
-                        best_l = l
-                        best_m = m
+                # Tallest stack that fits this footprint without exceeding the
+                # EMS height (max_m) or the available same-SKU count.
+                m = max_m
+                if fp * m > max_count:
+                    m = max_count // fp
+                count = fp * m
+                if fp > best_fp or (fp == best_fp and count > best_count):
+                    best_fp = fp
+                    best_count = count
+                    best_k = k
+                    best_l = l
+                    best_m = m
     return best_k, best_l, best_m
 
 

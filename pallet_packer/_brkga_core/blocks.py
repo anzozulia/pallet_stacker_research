@@ -77,8 +77,10 @@ def enumerate_top_k_blocks_per_sku(
                         if n < 2:
                             continue
                         candidates.append((n, k, l, m, r))
-        # Sort by count desc, dedupe by count (keep one per count)
-        candidates.sort(key=lambda c: -c[0])
+        # Sort by count desc, then by floor footprint (k*l) desc, so that the
+        # one shape kept per count is the FLATTEST (floor-first — avoids the
+        # candidate set offering only corner-tower shapes for a given count).
+        candidates.sort(key=lambda c: (-c[0], -(c[1] * c[2])))
         seen_counts = set()
         unique = []
         for c in candidates:
@@ -151,6 +153,11 @@ def enumerate_best_block_per_sku(
         sample = idxs[0]
         count = len(idxs)
         n_rots = int(n_rots_arr[sample])
+        # Floor-first: pick the block with the largest floor footprint (k*l),
+        # then the most boxes (count) within it — mirrors
+        # find_best_block_at_pos_njit so the precomputed fallback also spreads
+        # on the floor instead of building corner towers.
+        best_fp = 1
         best_n = 1
         best_k, best_l, best_m, best_rot = 1, 1, 1, 0
         for r in range(n_rots):
@@ -166,15 +173,17 @@ def enumerate_best_block_per_sku(
                 if k > count:
                     break
                 for l in range(1, max_l + 1):
-                    if k * l > count:
+                    fp = k * l
+                    if fp > count:
                         break
-                    for m in range(1, max_m + 1):
-                        n = k * l * m
-                        if n > count:
-                            break
-                        if n > best_n:
-                            best_n = n
-                            best_k, best_l, best_m, best_rot = k, l, m, r
+                    m = max_m
+                    if fp * m > count:
+                        m = count // fp
+                    n = fp * m
+                    if fp > best_fp or (fp == best_fp and n > best_n):
+                        best_fp = fp
+                        best_n = n
+                        best_k, best_l, best_m, best_rot = k, l, m, r
         best_blocks[sku, 0] = best_k
         best_blocks[sku, 1] = best_l
         best_blocks[sku, 2] = best_m
