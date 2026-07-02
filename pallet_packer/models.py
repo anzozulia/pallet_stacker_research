@@ -277,8 +277,10 @@ class PackerConfig:
     align_orientations: bool = False
     # Weight of the epsilon-scaled secondary "realism" fitness term
     # (heavy-low height moment + max-height + orientation consistency).
-    # 0.0 = off (fitness is pure volume, the historical objective). The term
-    # is bounded-loss: it can never cost more than half the smallest box's
-    # volume, so it never causes a box to be dropped.
+    # A dial in [0, 1]: 0.0 = off (fitness is pure volume, the historical
+    # objective); values above 1.0 are clamped by build_realism_context so
+    # the bounded-loss guarantee holds (the term can never cost more than
+    # half the smallest box's volume, so it never causes a box to be
+    # dropped).
     realism_weight: float = 0.0
 

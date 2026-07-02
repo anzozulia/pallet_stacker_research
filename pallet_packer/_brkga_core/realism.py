@@ -27,12 +27,14 @@ the search prefer a heavy-on-top layout over the heavy-low alternative
 purely because the latter mixed more orientations.
 
 Epsilon guarantee (bounded loss, NOT lexicographic dominance): with
-eps = 0.5 * min_box_volume / capacity * realism_weight, the realism term can
-never cost more than half the smallest box's volume, so it can never cause a
-box to be dropped — but it may prefer a marginally-lower-volume arrangement.
-When the computed eps falls under 1e-7 (degenerate dust-box instances) the
-term is disabled for that solve rather than floored (flooring would break
-the bounded-loss budget).
+eps = 0.5 * min_box_volume / capacity * min(1.0, realism_weight), the realism
+term can never cost more than half the smallest box's volume, so it can never
+cause a box to be dropped — but it may prefer a marginally-lower-volume
+arrangement. realism_weight is a dial in [0, 1]; values above 1 are CLAMPED
+(an unclamped weight > 2 would make dropping the smallest box profitable and
+silently void the guarantee — hardening plan A4). When the computed eps falls
+under 1e-7 (degenerate dust-box instances) the term is disabled for that
+solve rather than floored (flooring would break the bounded-loss budget).
 
 No CoG-offset-from-center term on purpose: all decoders corner-anchor at the
 origin, so pre-recenter that offset measures fill level, not arrangement
@@ -101,6 +103,15 @@ def build_realism_context(
     (realism_weight <= 0, empty input, or a degenerate epsilon)."""
     if float(config.realism_weight) <= 0.0 or not boxes:
         return None
+    ids = [str(b.id) for b in boxes]
+    if len(set(ids)) != len(ids):
+        # The scalar path maps placements back to rows BY ID while the batch
+        # path is positional — duplicate ids would silently desync the two
+        # and corrupt the search (C7/F9). The service's input gate enforces
+        # unique ids; this protects un-gated library callers.
+        logger.info("realism disabled for this solve: duplicate box ids "
+                    "(scalar fitness is id-keyed; parity would break)")
+        return None
     if dims_all is None or sku_id_per_box is None or n_rots_arr is None:
         from .precompute import precompute_box_dims_and_sku
         n_rots_arr, dims_all, sku_id_per_box = \
@@ -117,7 +128,9 @@ def build_realism_context(
     vols0 = (dims_all[:, 0, 0].astype(np.float64)
              * dims_all[:, 0, 1] * dims_all[:, 0, 2])
     min_vol = float(vols0.min())
-    eps = 0.5 * (min_vol / cap) * float(config.realism_weight)
+    # min(1.0, w): the bounded-loss guarantee holds only for eps <=
+    # 0.5*min_vol/cap — see module docstring.
+    eps = 0.5 * (min_vol / cap) * min(1.0, float(config.realism_weight))
     if eps < _MIN_EPS:
         logger.info("realism disabled for this solve: eps=%.3g < %.0e",
                     eps, _MIN_EPS)

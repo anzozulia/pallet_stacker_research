@@ -334,6 +334,16 @@ def _brkga_pack_v35_impl(
     v2_result: Optional[PackResult] = None
     v2_seed_chrom: Optional[np.ndarray] = None
     v2_seed_chroms_per_mode: List[np.ndarray] = []
+    # Hardening plan B2: the v2 seed gets HALF the solve budget as a hard
+    # wall-clock deadline (it used to run unbounded — finding F2: ~175 s at
+    # N=400 identical constrained boxes, blowing every service budget). A
+    # partial v2 pack is still a useful warm start. Slices under 1 s can't
+    # produce anything useful — skip the seed entirely.
+    v2_slice = 0.5 * float(time_limit_s)
+    if use_v2_seed and v2_slice < 1.0:
+        if verbose:
+            print(f"  [v3.5] v2 seed skipped: budget slice {v2_slice:.2f}s < 1s")
+        use_v2_seed = False
     if use_v2_seed:
         try:
             from ..packer import PalletPacker
@@ -345,7 +355,7 @@ def _brkga_pack_v35_impl(
             # The whole BRKGA path already uses the function arg; align v2 too.
             v2_config = replace(config, max_pallets=max_pallets)
             v2_packer = PalletPacker(pallet, v2_config)
-            v2_result = v2_packer.pack(boxes)
+            v2_result = v2_packer.pack(boxes, time_limit_s=v2_slice)
             if use_multi_decoder:
                 for m in range(n_modes):
                     cs = chromosome_from_v2_result(v2_result, boxes, n_rots_arr,

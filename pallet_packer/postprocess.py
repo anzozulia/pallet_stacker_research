@@ -37,9 +37,13 @@ from .validate import validate
 
 logger = logging.getLogger(__name__)
 
-# Wall-clock cap for the align pass, per pallet. The post-pass runs outside
-# the solver's time_limit_s accounting, and the service's hard-kill margin
-# above the soft budget is only ~30 s — this keeps the overshoot bounded.
+# Wall-clock caps. The post-pass runs outside the solver's time_limit_s
+# accounting, and the service's hard-kill margin above the soft budget is only
+# ~30 s. apply_postprocess shares ONE global budget across all pallets
+# (hardening plan C6 — a per-pallet cap times an unbounded pallet count could
+# eat the whole margin); _ALIGN_BUDGET_S remains the default for direct
+# single-pallet align_orientations_pass calls.
+_POSTPROCESS_BUDGET_S = 4.0
 _ALIGN_BUDGET_S = 2.0
 
 
@@ -105,17 +109,21 @@ def align_orientations_pass(st: PalletState, pallet: Pallet,
                 logger.info("align_orientations: time box hit after %d swaps",
                             swaps)
                 return swaps
-            # Dependents gate: if anything rests on this box, only a
-            # height-preserving swap is possible (a dz change makes every
-            # dependent float, and there is no cheap repair).
+            # Dependents gate (hardening plan A1): if anything rests on this
+            # box, skip it entirely. ANY dims change under a dependent is
+            # unrepairable locally — a dz change floats every dependent, and
+            # a yaw change pulls the footprint out from under it (probe:
+            # dependent stranded at support 0.0). A swap to identical dims
+            # would be a no-op, and a deviant by definition has different
+            # dims than the dominant.
             has_dependents = any(
                 q is not m and abs(q.z - m.z2) <= EPS and _xy_overlap(q, m) > EPS
                 for q in placements)
+            if has_dependents:
+                continue
             for rot in m.box.allowed_rotations:
                 dims = m.box.dims_for(rot)
                 if _dims_key(dims) != dominant:
-                    continue
-                if has_dependents and abs(dims[2] - m.dz) > EPS:
                     continue
                 ov = pallet.max_overhang if config.allow_pallet_overhang else 0.0
                 if (m.x + dims[0] > pallet.length + ov + EPS or
@@ -154,6 +162,14 @@ def recenter_pass(st: PalletState, pallet: Pallet,
     placements = st.placements
     if not placements:
         return 0.0, 0.0
+    if pallet.cog_x_range is not None or pallet.cog_y_range is not None:
+        # The caller owns CoG placement: an explicit range may be off-centre,
+        # and shifting the load to the deck centre could violate it (C5/F7).
+        # The config-fraction envelope needs no guard here — it is always
+        # centred on the deck (L/2 ± frac·L), a rigid shift toward the centre
+        # can only move the weight-CoG deeper into it, and weightless loads
+        # short-circuit the engine's _cog_ok entirely.
+        return 0.0, 0.0
 
     def _shift(lo, hi, centres_weights, deck):
         span = hi - lo
@@ -183,16 +199,22 @@ def recenter_pass(st: PalletState, pallet: Pallet,
 
 
 def apply_postprocess(result: PackResult, pallet: Pallet,
-                      config: PackerConfig, verbose: bool = False) -> PackResult:
+                      config: PackerConfig, verbose: bool = False,
+                      time_budget_s: float = _POSTPROCESS_BUDGET_S) -> PackResult:
     """Run the enabled realism passes on every pallet, in place.
 
     Order matters: align first (swaps change the bounding box), then
     recenter. Safety net: a pallet whose layout fails replay validation
     before the passes is skipped; a pallet that fails it after the passes is
     reverted to its pre-pass snapshot. Never raises.
+
+    time_budget_s is ONE wall-clock budget shared by all pallets' align
+    passes (C6): once spent, later pallets skip aligning but still get the
+    cheap O(N) recenter.
     """
     if not (config.recenter_layout or config.align_orientations):
         return result
+    t0 = time.monotonic()
     for st in result.pallets:
         if not st.placements:
             continue
@@ -205,7 +227,13 @@ def apply_postprocess(result: PackResult, pallet: Pallet,
         swaps = 0
         try:
             if config.align_orientations:
-                swaps = align_orientations_pass(st, pallet, config)
+                remaining = time_budget_s - (time.monotonic() - t0)
+                if remaining > 0.0:
+                    swaps = align_orientations_pass(
+                        st, pallet, config, time_budget_s=remaining)
+                else:
+                    logger.info("postprocess: global budget spent; skipping "
+                                "align for %s", st.pallet_id)
             if config.recenter_layout:
                 recenter_pass(st, pallet, config)
             errors = validate(PackResult(pallets=[st], unpacked=[]),

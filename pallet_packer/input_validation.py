@@ -42,6 +42,14 @@ from .models import Box, Pallet
 # in docs/reports/30_verification.md). Overridable per call / per deployment.
 DEFAULT_MAX_BOXES = 500
 
+# The BRKGA decoders encode "no cap" as the finite sentinel 1e18
+# (_brkga_core.precompute._NO_LIMIT) so the JIT hot loops stay nan/inf-free.
+# A box weighing >= 1e18 exceeds every cap INCLUDING the sentinel and becomes
+# silently unpackable even on an unlimited pallet. Rejecting weights >= 1e15
+# keeps even a full 500-box request (500 x 1e15 = 5e17) safely under the
+# sentinel. (Hardening plan C4/F5.)
+MAX_BOX_WEIGHT = 1e15
+
 
 class PackingInputError(ValueError):
     """Raised by check_packing_input when the request is malformed.
@@ -148,6 +156,10 @@ def validate_packing_input(
             problems.append(
                 f"{label}.weight must be a finite, non-negative number "
                 f"(got {w!r})")
+        elif float(w) >= MAX_BOX_WEIGHT:
+            problems.append(
+                f"{label}.weight is out of the supported range "
+                f"(must be < {MAX_BOX_WEIGHT:.0e}, got {w!r})")
         m = getattr(b, "max_load_on_top", math.inf)
         # max_load_on_top: 0 (fragile) is valid; +inf (unlimited) is valid;
         # negative / NaN is not.

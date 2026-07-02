@@ -451,6 +451,9 @@ class PalletPacker:
     def __init__(self, pallet: Pallet, config: Optional[PackerConfig] = None):
         self.pallet = pallet
         self.config = config or PackerConfig()
+        # Wall-clock deadline for pack(time_limit_s=...). None = unbounded
+        # (the historical behavior). See _expired().
+        self._deadline: Optional[float] = None
         self._rng = random.Random(self.config.seed)
 
     # -------- SKU-consistent rotation (Bortfeldt-Gehring 2001) ------------
@@ -745,7 +748,10 @@ class PalletPacker:
         def used_volume(st: PalletState) -> float:
             return sum(p.box.volume for p in st.placements)
 
-        for box in ordered:
+        for bi, box in enumerate(ordered):
+            if self._expired():
+                unpacked.extend(ordered[bi:])
+                break
             placed = False
             if pallet_selection == "first_fit":
                 for st in pallets:
@@ -776,13 +782,30 @@ class PalletPacker:
         return PackResult(pallets=pallets, unpacked=unpacked)
 
     # -------- multi-start orchestrator ------------------------------------
-    def pack(self, boxes: List[Box]) -> PackResult:
+    def _expired(self) -> bool:
+        return (self._deadline is not None
+                and time.monotonic() > self._deadline)
+
+    def pack(self, boxes: List[Box],
+             time_limit_s: Optional[float] = None) -> PackResult:
         """Pack with optional block-building and BRKGA improvements.
 
         When block-building is enabled, we try multiple decomposition
         strategies (no-blocks, max-blocks, column-blocks, layer-blocks)
         and return the best across all of them.
+
+        time_limit_s (hardening plan B1): optional wall-clock deadline.
+        None (default) = unbounded, bit-identical to the historical
+        behavior. With a deadline, candidate-generation stages are skipped
+        once it expires and the greedy per-box loops stop placing (the
+        remainder becomes unpacked) — pack() always returns the best
+        candidate found so far. Needed because the v2 warm-start is
+        superlinear on homogeneous loads (N=400 identical constrained
+        boxes ~175 s) and used to run to completion regardless of the
+        caller's budget (finding F2).
         """
+        self._deadline = (time.monotonic() + float(time_limit_s)
+                          if time_limit_s else None)
         # Phase 2a: SKU-lock candidate set. We keep BOTH locked and unlocked
         # box lists so the search can take the best across both — SKU lock
         # is greedy per-SKU and can break joint-SKU interlock layouts (F3),
@@ -874,6 +897,8 @@ class PalletPacker:
             self.config.use_safety_net and
             (self.config.grasp_alpha > 1 or self.config.use_brkga)
         )
+        if need_safety and self._expired():
+            need_safety = False
         if need_safety:
             saved_alpha = self.config.grasp_alpha
             saved_brkga = self.config.use_brkga
@@ -909,7 +934,7 @@ class PalletPacker:
 
         # Phase 2 features (GRASP-randomized): try each block-building
         # strategy across all box variants.
-        if self.config.use_block_building:
+        if self.config.use_block_building and not self._expired():
             for variant in box_variants:
                 for strategy in ("max", "column", "layer"):
                     items, specs = self._build_blocks(variant, strategy=strategy)
@@ -925,7 +950,9 @@ class PalletPacker:
         #
         # Skips when the heuristic already achieves the volume LB —
         # MIP can't improve on that, and running it would waste budget.
-        if self.config.use_mip_polish and len(boxes) <= self.config.mip_n_threshold:
+        if (self.config.use_mip_polish
+                and len(boxes) <= self.config.mip_n_threshold
+                and not self._expired()):
             try:
                 from .mip import mip_polish as _mip_polish
                 # Estimate a sensible P budget from heuristic candidates,
@@ -977,7 +1004,7 @@ class PalletPacker:
         # Phase 2e: layer-building decoder candidates. Tries 3 axes × 2 seed
         # strategies per box variant — each combination produces a
         # qualitatively different packing structure.
-        if self.config.use_layer_building:
+        if self.config.use_layer_building and not self._expired():
             axes = [self.config.layer_axis] if self.config.layer_axis else ["x", "y", "z"]
             if axes == ["all"]:
                 axes = ["x", "y", "z"]
@@ -987,6 +1014,8 @@ class PalletPacker:
                 for ax in axes:
                     for strat in ("cross_section", "depth", "min_depth", "sku_volume"):
                         for fill in ("ep", "maxrects", "sku_grid"):
+                            if self._expired():
+                                break
                             candidates.append(self._layer_pack(
                                 variant, axis=ax, seed_strategy=strat, fill=fill,
                             ))
@@ -996,7 +1025,8 @@ class PalletPacker:
         # Phase 2d: ejection chains. Only fires when (a) opted in and (b)
         # there ARE unpacked items — the standard Crainic-Perboli-Tadei
         # formulation.
-        if self.config.use_ejection_chains and best.unpacked:
+        if (self.config.use_ejection_chains and best.unpacked
+                and not self._expired()):
             improved = self._ejection_chains(best)
             if quality(improved) < quality(best):
                 best = improved
@@ -1005,7 +1035,7 @@ class PalletPacker:
         # via use_ejection_chains AND (b) the result has 2+ pallets AND
         # (c) no unpacked items left. Targets the "first-fit waste" case
         # where greedy packs everything but uses one pallet too many.
-        if (self.config.use_ejection_chains and
+        if (self.config.use_ejection_chains and not self._expired() and
                 not best.unpacked and best.num_pallets >= 2):
             # First: try fast item-by-item displacement.
             improved = self._consolidate_leftover_pallet(best)
@@ -1022,6 +1052,7 @@ class PalletPacker:
         # polish is enabled, (b) the full-problem MIP wasn't run (N too
         # large), and (c) result still has multiple pallets.
         if (self.config.use_mip_polish and len(boxes) > self.config.mip_n_threshold
+                and not self._expired()
                 and not best.unpacked and best.num_pallets >= 2):
             polished = self._mip_last_pallet_polish(best)
             if polished is not None and quality(polished) < quality(best):
@@ -2139,6 +2170,8 @@ class PalletPacker:
             return (len(res.unpacked), res.num_pallets, -res.total_volume_utilisation)
 
         for order, strat, sel in trials:
+            if best_result is not None and self._expired():
+                break
             res = self._pack_once(boxes, order, strategy=strat, pallet_selection=sel)
             if best_result is None or quality_score(res) < quality_score(best_result):
                 best_result = res
