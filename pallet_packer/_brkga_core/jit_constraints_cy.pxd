@@ -26,6 +26,8 @@ cdef bint _ck_load_on_top(
     double support_ratio,
     int require_centroid,
     int require_full_support,
+    i64 pallet_l,
+    i64 pallet_w,
 ) noexcept nogil
 
 
@@ -64,4 +66,35 @@ cdef void _ap_load_contribution(
     i64 cand_x, i64 cand_y, i64 cand_z,
     i64 cand_dx, i64 cand_dy, i64 cand_dz,
     double cand_weight,
+) noexcept nogil
+
+
+cdef bint _ck_load_transitive(
+    const i64[:, ::1] placements_out,
+    const i64[:, :, ::1] dims_all,
+    const i64[::1] bps_order,
+    const double[::1] mlot,
+    const double[::1] placement_top_loads,
+    i64 n_placed,
+    i64 cand_pallet,
+    i64 cand_x, i64 cand_y, i64 cand_z,
+    i64 cand_dx, i64 cand_dy, i64 cand_dz,
+    double cand_weight,
+    double[::1] tl_inc,
+    i64[::1] tl_touched,
+) noexcept nogil
+
+
+cdef void _ap_load_contribution_transitive(
+    const i64[:, ::1] placements_out,
+    const i64[:, :, ::1] dims_all,
+    const i64[::1] bps_order,
+    double[::1] placement_top_loads,
+    i64 n_placed,
+    i64 cand_pallet,
+    i64 cand_x, i64 cand_y, i64 cand_z,
+    i64 cand_dx, i64 cand_dy, i64 cand_dz,
+    double cand_weight,
+    double[::1] tl_inc,
+    i64[::1] tl_touched,
 ) noexcept nogil

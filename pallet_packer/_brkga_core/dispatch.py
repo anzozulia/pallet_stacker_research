@@ -183,6 +183,13 @@ def decode_chromosome(
     # boxes can overhang the +x / +y pallet edges but not the -x / -y).
     L_eff = L + int(round(max_overhang)) if max_overhang > 0 else L
     W_eff = W + int(round(max_overhang)) if max_overhang > 0 else W
+    # Hardening round 2: raw deck dims for the floor deck-contact check
+    # (F17) — passed only when overhang inflates L/W, else the 0 sentinel
+    # keeps the decoders' legacy unconditional-floor-support path — and the
+    # transitive load-commit flag (F19).
+    pallet_l = L if max_overhang > 0 else 0
+    pallet_w = W if max_overhang > 0 else 0
+    transitive = 1 if getattr(config, "transitive_load_bearing", False) else 0
 
     placements_out = np.zeros((n, 6), dtype=np.int64)
     # Constraint-aware dispatch (v3.11/v3.12): every mode has a constraint-
@@ -200,6 +207,7 @@ def decode_chromosome(
                 require_centroid,
                 cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                 cog_min_load_frac, cog_active,
+                pallet_l, pallet_w, transitive,
             )
         else:
             n_bins = decode_layer_njit(
@@ -217,6 +225,7 @@ def decode_chromosome(
                     require_centroid,
                     cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                     cog_min_load_frac, cog_active,
+                    pallet_l, pallet_w, transitive,
                 )
             else:
                 n_bins = decode_njit_mode(
@@ -233,6 +242,7 @@ def decode_chromosome(
                     require_centroid,
                     cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                     cog_min_load_frac, cog_active,
+                    pallet_l, pallet_w, transitive,
                 )
             else:
                 n_bins = decode_blocks_njit_mode(
@@ -250,6 +260,7 @@ def decode_chromosome(
                     require_centroid,
                     cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                     cog_min_load_frac, cog_active,
+                    pallet_l, pallet_w, transitive,
                 )
             else:
                 n_bins = decode_njit_mode(
@@ -270,6 +281,7 @@ def decode_chromosome(
                 require_centroid,
                 cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                 cog_min_load_frac, cog_active,
+                pallet_l, pallet_w, transitive,
             )
         else:
             n_skus = int(sku_id_per_box.max()) + 1
@@ -303,6 +315,7 @@ def decode_chromosome(
                 require_centroid,
                 cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                 cog_min_load_frac, cog_active,
+                pallet_l, pallet_w, transitive,
             )
         else:
             n_bins = decode_njit_mode(
@@ -538,6 +551,10 @@ def decode_population_fitness(
     H = int(round(pallet.height))
     L_eff = L + int(round(max_overhang)) if max_overhang > 0 else L
     W_eff = W + int(round(max_overhang)) if max_overhang > 0 else W
+    # F17 deck check / F19 transitive load — mirrors decode_chromosome.
+    pallet_l = L if max_overhang > 0 else 0
+    pallet_w = W if max_overhang > 0 else 0
+    transitive = 1 if getattr(config, "transitive_load_bearing", False) else 0
 
     cstr_active = (has_constraints and weights is not None
                    and mlot is not None and rfs is not None)
@@ -589,6 +606,7 @@ def decode_population_fitness(
             cog_y_min=cog_y_min, cog_y_max=cog_y_max,
             cog_min_load_frac=cog_min_load_frac, cog_active=cog_active,
             L=L, W=W, n_skus=n_skus,
+            pallet_l=pallet_l, pallet_w=pallet_w, transitive=transitive,
         )
         placements_out_all[idx] = po_m
         n_bins_out_all[idx] = nb_m
@@ -609,10 +627,12 @@ def _decode_mode_batch(
     cog_x_min, cog_x_max, cog_y_min, cog_y_max,
     cog_min_load_frac, cog_active,
     L, W, n_skus,
+    pallet_l=0, pallet_w=0, transitive=0,
 ):
     """Dispatch a homogeneous (single-mode) sub-population to the right
     batch entry. Mirrors the mode-branching in decode_chromosome but
-    operates on populations.
+    operates on populations. pallet_l/pallet_w/transitive: see
+    decode_chromosome (F17 deck check / F19 transitive load).
     """
     if mode == 3:
         if cstr_active:
@@ -623,6 +643,7 @@ def _decode_mode_batch(
                 cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                 cog_min_load_frac, cog_active,
                 placements_out_all, n_bins_out,
+                pallet_l, pallet_w, transitive,
             )
         else:
             decode_batch_layer_njit(
@@ -641,6 +662,7 @@ def _decode_mode_batch(
                 cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                 cog_min_load_frac, cog_active,
                 placements_out_all, n_bins_out, n_skus,
+                pallet_l, pallet_w, transitive,
             )
         elif cstr_active and sku_id_per_box is None:
             decode_batch_njit_mode_cstr(
@@ -651,6 +673,7 @@ def _decode_mode_batch(
                 cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                 cog_min_load_frac, cog_active,
                 placements_out_all, n_bins_out,
+                pallet_l, pallet_w, transitive,
             )
         elif sku_id_per_box is None:
             decode_batch_njit_mode(
@@ -697,6 +720,7 @@ def _decode_mode_batch(
                 cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                 cog_min_load_frac, cog_active,
                 placements_out_all, n_bins_out,
+                pallet_l, pallet_w, transitive,
             )
         else:
             decode_batch_njit_mode(

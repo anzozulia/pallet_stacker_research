@@ -34,8 +34,10 @@ from .jit_primitives import (
 from .jit_decoders_geom import find_best_block_at_pos_njit
 from .jit_constraints import (
     _check_load_on_top_njit,
+    _check_load_transitive_njit,
     _check_cog_envelope_njit,
     _apply_load_contribution_njit,
+    _apply_load_contribution_transitive_njit,
     _apply_cog_contribution_njit,
 )
 
@@ -59,6 +61,9 @@ def decode_njit_mode_cstr(
     cog_y_min: float, cog_y_max: float,
     cog_min_load_frac: float,
     cog_active: int,
+    pallet_l: int = 0,
+    pallet_w: int = 0,
+    transitive: int = 0,
 ) -> int:
     """Constraint-aware variant of decode_njit_mode (v3.10/v3.12).
 
@@ -66,6 +71,9 @@ def decode_njit_mode_cstr(
     Enforces (v3.12): per-box requires_full_support, centroid-supported,
     pallet CoG envelope. Caller passes L, W as L_eff, W_eff already inflated
     by max_overhang when applicable. Rejected candidate → try next bin.
+    Hardening round 2: pallet_l/pallet_w are the RAW deck dims (0 sentinel
+    unless overhang is active) for the floor deck-contact check (F17);
+    transitive selects the transitive load commit (F19).
     """
     n = bps_order.shape[0]
     MAX_BINS = max_pallets if max_pallets > 0 else 32
@@ -75,6 +83,8 @@ def decode_njit_mode_cstr(
     scratch = np.zeros((MAX_EMS, 2, 3), dtype=np.int64)
     pallet_weights = np.zeros(MAX_BINS, dtype=np.float64)
     placement_top_loads = np.zeros(n, dtype=np.float64)
+    tl_inc = np.zeros(n, dtype=np.float64)
+    tl_touched = np.zeros(n, dtype=np.int64)
     pallet_sum_xw = np.zeros(MAX_BINS, dtype=np.float64)
     pallet_sum_yw = np.zeros(MAX_BINS, dtype=np.float64)
 
@@ -146,7 +156,16 @@ def decode_njit_mode_cstr(
                     placement_top_loads, n,
                     b, bin_best_x, bin_best_y, bin_best_z,
                     dx, dy, dz, cand_weight, support_ratio,
-                    require_centroid, rfs[box_idx]):
+                    require_centroid, rfs[box_idx],
+                    pallet_l, pallet_w):
+                continue  # try next bin
+            # Transitive load check (F19): the direct check never rejects a
+            # fresh column — dry-run the downward flow too.
+            if transitive != 0 and not _check_load_transitive_njit(
+                    placements_out, dims_all, bps_order, mlot,
+                    placement_top_loads, n,
+                    b, bin_best_x, bin_best_y, bin_best_z,
+                    dx, dy, dz, cand_weight, tl_inc, tl_touched):
                 continue  # try next bin
             # CoG envelope check (only when active).
             if cog_active != 0:
@@ -180,11 +199,18 @@ def decode_njit_mode_cstr(
             placements_out[i, 4] = bin_best_z
             placements_out[i, 5] = 1
             pallet_weights[b] += cand_weight
-            _apply_load_contribution_njit(
-                placements_out, dims_all, bps_order,
-                placement_top_loads, n,
-                b, bin_best_x, bin_best_y, bin_best_z,
-                dx, dy, dz, cand_weight)
+            if transitive != 0:
+                _apply_load_contribution_transitive_njit(
+                    placements_out, dims_all, bps_order,
+                    placement_top_loads, n,
+                    b, bin_best_x, bin_best_y, bin_best_z,
+                    dx, dy, dz, cand_weight, tl_inc, tl_touched)
+            else:
+                _apply_load_contribution_njit(
+                    placements_out, dims_all, bps_order,
+                    placement_top_loads, n,
+                    b, bin_best_x, bin_best_y, bin_best_z,
+                    dx, dy, dz, cand_weight)
             _apply_cog_contribution_njit(
                 bin_best_x, bin_best_y, dx, dy,
                 cand_weight, b, pallet_sum_xw, pallet_sum_yw)
@@ -261,6 +287,18 @@ def decode_njit_mode_cstr(
             dx = dims_all[box_idx, r, 0]
             dy = dims_all[box_idx, r, 1]
             dz = dims_all[box_idx, r, 2]
+            # Deck-contact check (F17): with overhang, L/W are inflated and
+            # even a floor placement can sit off the raw deck.
+            if pallet_l > 0:
+                if not _check_load_on_top_njit(
+                        placements_out, dims_all, bps_order, mlot,
+                        placement_top_loads, n,
+                        n_bins, best_x_n, best_y_n, best_z_n,
+                        dx, dy, dz, cand_weight, support_ratio,
+                        require_centroid, rfs[box_idx],
+                        pallet_l, pallet_w):
+                    placements_out[i, 5] = 0
+                    continue
             new_count = commit_ems_njit(
                 bin_emss[n_bins], bin_ems_count[n_bins],
                 best_x_n, best_y_n, best_z_n,
@@ -417,6 +455,9 @@ def decode_blocks_njit_mode_cstr(
     cog_y_min: float, cog_y_max: float,
     cog_min_load_frac: float,
     cog_active: int,
+    pallet_l: int = 0,
+    pallet_w: int = 0,
+    transitive: int = 0,
 ) -> int:
     """Constraint-aware dynamic-block decoder (mode 4 + v3.11/v3.12).
 
@@ -436,6 +477,8 @@ def decode_blocks_njit_mode_cstr(
     placed = np.zeros(n, dtype=np.int64)
     pallet_weights = np.zeros(MAX_BINS, dtype=np.float64)
     placement_top_loads = np.zeros(n, dtype=np.float64)
+    tl_inc = np.zeros(n, dtype=np.float64)
+    tl_touched = np.zeros(n, dtype=np.int64)
     pallet_sum_xw = np.zeros(MAX_BINS, dtype=np.float64)
     pallet_sum_yw = np.zeros(MAX_BINS, dtype=np.float64)
 
@@ -516,7 +559,18 @@ def decode_blocks_njit_mode_cstr(
                             placement_top_loads, n,
                             b, best_x + bx_kk * dx, best_y + bx_ll * dy, best_z,
                             dx, dy, dz, box_weight, support_ratio,
-                            require_centroid, rfs[box_idx]):
+                            require_centroid, rfs[box_idx],
+                            pallet_l, pallet_w):
+                        bottom_ok = False
+                        break
+                    # Transitive (F19): each bottom box relays its whole
+                    # column (m*w) to the external chain below.
+                    if transitive != 0 and not _check_load_transitive_njit(
+                            placements_out, dims_all, bps_order, mlot,
+                            placement_top_loads, n,
+                            b, best_x + bx_kk * dx, best_y + bx_ll * dy, best_z,
+                            dx, dy, dz, float(m) * box_weight,
+                            tl_inc, tl_touched):
                         bottom_ok = False
                         break
                 if not bottom_ok:
@@ -529,7 +583,15 @@ def decode_blocks_njit_mode_cstr(
                         placement_top_loads, n,
                         b, best_x, best_y, best_z,
                         dx, dy, dz, box_weight, support_ratio,
-                        require_centroid, rfs[box_idx]):
+                        require_centroid, rfs[box_idx],
+                        pallet_l, pallet_w):
+                    continue  # next bin
+                if transitive != 0 and not _check_load_transitive_njit(
+                        placements_out, dims_all, bps_order, mlot,
+                        placement_top_loads, n,
+                        b, best_x, best_y, best_z,
+                        dx, dy, dz, float(m) * box_weight,
+                        tl_inc, tl_touched):
                     continue  # next bin
             # Phase 2d: CoG envelope check (block treated as point mass at
             # the bottom-layer footprint centroid; total weight = k*l*m*w).
@@ -569,11 +631,23 @@ def decode_blocks_njit_mode_cstr(
                         continue
                     if sku_id_per_box[bps_order[jj]] != my_sku:
                         continue
-                    _apply_load_contribution_njit(
-                        placements_out, dims_all, bps_order,
-                        placement_top_loads, n,
-                        b, placements_out[jj, 2], placements_out[jj, 3],
-                        best_z, dx, dy, dz, box_weight)
+                    if transitive != 0:
+                        # The bottom box carries its whole column (the
+                        # block-internal seeding is already transitive), so
+                        # the FULL column weight flows through it to the
+                        # external supporters and on down (F19).
+                        _apply_load_contribution_transitive_njit(
+                            placements_out, dims_all, bps_order,
+                            placement_top_loads, n,
+                            b, placements_out[jj, 2], placements_out[jj, 3],
+                            best_z, dx, dy, dz, float(m) * box_weight,
+                            tl_inc, tl_touched)
+                    else:
+                        _apply_load_contribution_njit(
+                            placements_out, dims_all, bps_order,
+                            placement_top_loads, n,
+                            b, placements_out[jj, 2], placements_out[jj, 3],
+                            best_z, dx, dy, dz, box_weight)
                     applied += 1
             # Update CoG with each box in the block as a separate point mass
             # (using its actual position rather than collapsing to bottom-layer
@@ -687,6 +761,38 @@ def decode_blocks_njit_mode_cstr(
             placed[i] = 1
             sku_remaining[my_sku] -= 1
             continue
+        # Deck-contact check (F17): under overhang the bottom layer can
+        # extend past the raw deck; every bottom box needs deck contact.
+        # Mirror Phase 2c's fallback: shrink to 1x1 before giving up.
+        if pallet_l > 0:
+            deck_ok = True
+            for bx_ll in range(l):
+                for bx_kk in range(k):
+                    if not _check_load_on_top_njit(
+                            placements_out, dims_all, bps_order, mlot,
+                            placement_top_loads, n,
+                            n_bins, best_x_n + bx_kk * dx,
+                            best_y_n + bx_ll * dy, best_z_n,
+                            dx, dy, dz, box_weight, support_ratio,
+                            require_centroid, rfs[box_idx],
+                            pallet_l, pallet_w):
+                        deck_ok = False
+                        break
+                if not deck_ok:
+                    break
+            if not deck_ok:
+                k, l = 1, 1
+                if not _check_load_on_top_njit(
+                        placements_out, dims_all, bps_order, mlot,
+                        placement_top_loads, n,
+                        n_bins, best_x_n, best_y_n, best_z_n,
+                        dx, dy, dz, box_weight, support_ratio,
+                        require_centroid, rfs[box_idx],
+                        pallet_l, pallet_w):
+                    placements_out[i, 5] = 0
+                    placed[i] = 1
+                    sku_remaining[my_sku] -= 1
+                    continue
         # Floor placement (z=0), no support/load check needed for bottom.
         placed_so_far = _commit_block_placements_njit(
             placements_out, placed, bps_order, sku_id_per_box,
@@ -770,6 +876,9 @@ def decode_layer_njit_cstr(
     cog_y_min: float, cog_y_max: float,
     cog_min_load_frac: float,
     cog_active: int,
+    pallet_l: int = 0,
+    pallet_w: int = 0,
+    transitive: int = 0,
 ) -> int:
     """Constraint-aware Bischoff-Ratcliff layer-build (mode 3 + v3.11/v3.12).
 
@@ -788,6 +897,8 @@ def decode_layer_njit_cstr(
     scratch = np.zeros((MAX_EMS, 2, 3), dtype=np.int64)
     pallet_weights = np.zeros(MAX_BINS, dtype=np.float64)
     placement_top_loads = np.zeros(n, dtype=np.float64)
+    tl_inc = np.zeros(n, dtype=np.float64)
+    tl_touched = np.zeros(n, dtype=np.int64)
     pallet_sum_xw = np.zeros(MAX_BINS, dtype=np.float64)
     pallet_sum_yw = np.zeros(MAX_BINS, dtype=np.float64)
 
@@ -834,12 +945,19 @@ def decode_layer_njit_cstr(
                         pallet_max_weight,
                         cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                         cog_min_load_frac)
+                if cog_ok and transitive != 0:
+                    cog_ok = _check_load_transitive_njit(
+                        placements_out, dims_all, bps_order, mlot,
+                        placement_top_loads, n,
+                        b, bin_best_x, bin_best_y, bin_best_z,
+                        dx, dy, dz, cand_weight, tl_inc, tl_touched)
                 if cog_ok and _check_load_on_top_njit(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, bin_best_x, bin_best_y, bin_best_z,
                         dx, dy, dz, cand_weight, support_ratio,
-                        require_centroid, rfs[box_idx]):
+                        require_centroid, rfs[box_idx],
+                        pallet_l, pallet_w):
                     new_count = commit_ems_njit(
                         bin_emss[b], bin_ems_count[b],
                         bin_best_x, bin_best_y, bin_best_z,
@@ -861,11 +979,18 @@ def decode_layer_njit_cstr(
                     placements_out[i, 4] = bin_best_z
                     placements_out[i, 5] = 1
                     pallet_weights[b] += cand_weight
-                    _apply_load_contribution_njit(
-                        placements_out, dims_all, bps_order,
-                        placement_top_loads, n,
-                        b, bin_best_x, bin_best_y, bin_best_z,
-                        dx, dy, dz, cand_weight)
+                    if transitive != 0:
+                        _apply_load_contribution_transitive_njit(
+                            placements_out, dims_all, bps_order,
+                            placement_top_loads, n,
+                            b, bin_best_x, bin_best_y, bin_best_z,
+                            dx, dy, dz, cand_weight, tl_inc, tl_touched)
+                    else:
+                        _apply_load_contribution_njit(
+                            placements_out, dims_all, bps_order,
+                            placement_top_loads, n,
+                            b, bin_best_x, bin_best_y, bin_best_z,
+                            dx, dy, dz, cand_weight)
                     _apply_cog_contribution_njit(
                         bin_best_x, bin_best_y, dx, dy,
                         cand_weight, b, pallet_sum_xw, pallet_sum_yw)
@@ -915,12 +1040,19 @@ def decode_layer_njit_cstr(
                         pallet_max_weight,
                         cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                         cog_min_load_frac)
+                if cog_ok and transitive != 0:
+                    cog_ok = _check_load_transitive_njit(
+                        placements_out, dims_all, bps_order, mlot,
+                        placement_top_loads, n,
+                        b, new_slab_start, new_best_y, new_best_z,
+                        dx, dy, dz, cand_weight, tl_inc, tl_touched)
                 if cog_ok and _check_load_on_top_njit(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, new_slab_start, new_best_y, new_best_z,
                         dx, dy, dz, cand_weight, support_ratio,
-                        require_centroid, rfs[box_idx]):
+                        require_centroid, rfs[box_idx],
+                        pallet_l, pallet_w):
                     new_count = commit_ems_njit(
                         bin_emss[b], bin_ems_count[b],
                         new_slab_start, new_best_y, new_best_z,
@@ -944,11 +1076,18 @@ def decode_layer_njit_cstr(
                     pallet_weights[b] += cand_weight
                     bin_slab_min_x[b] = new_slab_start
                     bin_slab_max_x[b] = new_slab_start + dx
-                    _apply_load_contribution_njit(
-                        placements_out, dims_all, bps_order,
-                        placement_top_loads, n,
-                        b, new_slab_start, new_best_y, new_best_z,
-                        dx, dy, dz, cand_weight)
+                    if transitive != 0:
+                        _apply_load_contribution_transitive_njit(
+                            placements_out, dims_all, bps_order,
+                            placement_top_loads, n,
+                            b, new_slab_start, new_best_y, new_best_z,
+                            dx, dy, dz, cand_weight, tl_inc, tl_touched)
+                    else:
+                        _apply_load_contribution_njit(
+                            placements_out, dims_all, bps_order,
+                            placement_top_loads, n,
+                            b, new_slab_start, new_best_y, new_best_z,
+                            dx, dy, dz, cand_weight)
                     _apply_cog_contribution_njit(
                         new_slab_start, new_best_y, dx, dy,
                         cand_weight, b, pallet_sum_xw, pallet_sum_yw)
@@ -994,6 +1133,19 @@ def decode_layer_njit_cstr(
         dx = dims_all[box_idx, seed_rot, 0]
         dy = dims_all[box_idx, seed_rot, 1]
         dz = dims_all[box_idx, seed_rot, 2]
+        # Deck-contact check (F17): the seed sits at the origin, so this
+        # only bites when the box itself outspans the raw deck under
+        # overhang-inflated L/W.
+        if pallet_l > 0:
+            if not _check_load_on_top_njit(
+                    placements_out, dims_all, bps_order, mlot,
+                    placement_top_loads, n,
+                    n_bins, 0, seed_y, seed_z,
+                    dx, dy, dz, cand_weight, support_ratio,
+                    require_centroid, rfs[box_idx],
+                    pallet_l, pallet_w):
+                placements_out[i, 5] = 0
+                continue
         new_count = commit_ems_njit(
             bin_emss[n_bins], bin_ems_count[n_bins],
             0, seed_y, seed_z, dx, seed_y + dy, seed_z + dz, scratch,

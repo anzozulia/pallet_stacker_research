@@ -152,6 +152,38 @@ class PalletState:
             current = self._top_load.get(id(s), 0.0)
             if current + added > s.box.max_load_on_top + EPS:
                 return False
+        if getattr(self.config, "transitive_load_bearing", False):
+            # F19 (hardening round 2): the direct check above never rejects
+            # a FRESH pure column — each new box's direct supporter carries
+            # only its immediate rider. Dry-run the transitive flow the
+            # commit (_propagate_load) would push and test every box in the
+            # downward chain against its limit.
+            inflow: dict = {}
+            for s, a in supporters:
+                inflow[id(s)] = (inflow.get(id(s), 0.0)
+                                 + cand.box.weight * (a / total_area))
+            frontier = sorted((s for s, _ in supporters),
+                              key=lambda p: (-p.z, p.x, p.y))
+            seen = {id(s) for s, _ in supporters}
+            while frontier:
+                p = frontier.pop(0)
+                inc = inflow.get(id(p), 0.0)
+                if (self._top_load.get(id(p), 0.0) + inc
+                        > p.box.max_load_on_top + EPS):
+                    return False
+                if inc <= 0 or p.z <= EPS:
+                    continue
+                subs = self._supporters_of(p)
+                sub_area = sum(a for _, a in subs)
+                if sub_area <= 0:
+                    continue
+                for s2, a2 in subs:
+                    inflow[id(s2)] = (inflow.get(id(s2), 0.0)
+                                      + inc * (a2 / sub_area))
+                    if id(s2) not in seen:
+                        seen.add(id(s2))
+                        frontier.append(s2)
+                frontier.sort(key=lambda p2: (-p2.z, p2.x, p2.y))
         return True
 
     def _cog_after(self, cand: Placement) -> Tuple[float, float]:
@@ -211,6 +243,22 @@ class PalletState:
             if footprint <= 0 or supported / footprint < min_support - EPS:
                 return False
             if self.config.require_centroid_supported and not self._centroid_supported(cand, supporters):
+                return False
+        elif self.config.allow_pallet_overhang:
+            # Floor placement under overhang (F17): the box must still rest
+            # ON the deck — deck-contact area >= the effective support ratio
+            # of its footprint. Without this, overhang-inflated bounds let a
+            # floor box sit fully off the deck, floating in air. Inert when
+            # overhang is off (every floor box is then 100% on the deck).
+            footprint = cand.dx * cand.dy
+            deck_x = min(cand.x2, float(self.pallet.length)) - max(cand.x, 0.0)
+            deck_y = min(cand.y2, float(self.pallet.width)) - max(cand.y, 0.0)
+            contact = deck_x * deck_y if (deck_x > 0 and deck_y > 0) else 0.0
+            if contact <= EPS:
+                return False
+            min_support = 1.0 if cand.box.requires_full_support else self.config.support_ratio
+            if min_support > 0.0 and (
+                    footprint <= 0 or contact / footprint < min_support - EPS):
                 return False
         # 4. Load bearing
         if self.config.enforce_load_bearing and not self._load_bearing_ok(cand, supporters):
@@ -786,6 +834,15 @@ class PalletPacker:
         return (self._deadline is not None
                 and time.monotonic() > self._deadline)
 
+    def _clamp_to_deadline(self, budget_s: float) -> float:
+        """Clamp a stage's own wall budget to the time left before the
+        deadline — stage gates only check _expired() on ENTRY, so an
+        un-clamped stage could run its full budget past the deadline
+        (hardening round 2, A3-3). No deadline -> unchanged."""
+        if self._deadline is None:
+            return budget_s
+        return max(0.0, min(budget_s, self._deadline - time.monotonic()))
+
     def pack(self, boxes: List[Box],
              time_limit_s: Optional[float] = None) -> PackResult:
         """Pack with optional block-building and BRKGA improvements.
@@ -805,7 +862,7 @@ class PalletPacker:
         caller's budget (finding F2).
         """
         self._deadline = (time.monotonic() + float(time_limit_s)
-                          if time_limit_s else None)
+                          if time_limit_s is not None else None)
         # Phase 2a: SKU-lock candidate set. We keep BOTH locked and unlocked
         # box lists so the search can take the best across both — SKU lock
         # is greedy per-SKU and can break joint-SKU interlock layouts (F3),
@@ -976,8 +1033,8 @@ class PalletPacker:
                         warm.num_pallets <= vol_lb):
                     pass  # skip — already at LB
                 else:
-                    mip_budget = _adaptive_mip_budget(
-                        len(boxes), self.config.mip_time_limit_s)
+                    mip_budget = self._clamp_to_deadline(_adaptive_mip_budget(
+                        len(boxes), self.config.mip_time_limit_s))
                     mip_result = _mip_polish(
                         boxes, self.pallet, self.config,
                         time_limit_s=mip_budget,
@@ -1080,7 +1137,7 @@ class PalletPacker:
             return result
         depth = max(1, self.config.ejection_max_depth)
         budget = self.config.ejection_max_iters
-        wall_budget_s = 5.0   # hard wall-clock cap so we don't stall
+        wall_budget_s = self._clamp_to_deadline(5.0)  # hard wall-clock cap so we don't stall
 
         def quality(res: PackResult) -> Tuple:
             return (len(res.unpacked), res.num_pallets,
@@ -1175,8 +1232,8 @@ class PalletPacker:
 
         sub_result = _mip_polish(
             sub_boxes, self.pallet, self.config,
-            time_limit_s=_adaptive_mip_budget(
-                len(sub_boxes), self.config.mip_time_limit_s),
+            time_limit_s=self._clamp_to_deadline(_adaptive_mip_budget(
+                len(sub_boxes), self.config.mip_time_limit_s)),
             num_workers=self.config.mip_num_workers,
             max_pallets=target_pallets,
             warm_start=warm,
@@ -1293,7 +1350,7 @@ class PalletPacker:
             # Unpacked items take precedence — handled by _ejection_chains.
             return result
         budget = self.config.ejection_max_iters
-        wall_budget_s = 5.0
+        wall_budget_s = self._clamp_to_deadline(5.0)
 
         def quality(res: PackResult) -> Tuple:
             return (len(res.unpacked), res.num_pallets,
@@ -2004,6 +2061,8 @@ class PalletPacker:
         layer_offset = 0.0
 
         while remaining and layer_offset < axis_total - 1e-6:
+            if self._expired():
+                break          # deadline: keep the slabs built so far (A3-3)
             rem_axis = axis_total - layer_offset
 
             # Build per-SKU volume table once per layer (cheap; constant).

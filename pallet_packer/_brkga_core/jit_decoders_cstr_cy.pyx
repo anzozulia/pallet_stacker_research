@@ -30,8 +30,9 @@ from .jit_primitives_cy cimport (
     _find_best_wall, _find_best_corner, _find_best_in_slab,
 )
 from .jit_constraints_cy cimport (
-    _ck_load_on_top, _ck_cog_envelope,
-    _ap_load_contribution, _ap_cog_contribution,
+    _ck_load_on_top, _ck_load_transitive, _ck_cog_envelope,
+    _ap_load_contribution, _ap_load_contribution_transitive,
+    _ap_cog_contribution,
 )
 from .jit_decoders_geom_cy cimport _find_best_block_at_pos
 
@@ -45,9 +46,11 @@ def decode_njit_mode_cstr(
     require_centroid,
     cog_x_min, cog_x_max, cog_y_min, cog_y_max,
     cog_min_load_frac, cog_active,
+    pallet_l=0, pallet_w=0, transitive=0,
 ):
     """Cython implementation of decode_njit_mode_cstr (cstr modes 0/1/2).
-    Matches the Numba reference signature + semantics exactly.
+    Matches the Numba reference signature + semantics exactly (incl. the
+    F17 deck-contact params and the F19 transitive load flag).
     """
     cdef i64 cL = L, cW = W, cH = H
     cdef int cmode = mode
@@ -59,6 +62,8 @@ def decode_njit_mode_cstr(
     cdef double cymn = cog_y_min, cymx = cog_y_max
     cdef double cmlf = cog_min_load_frac
     cdef int cact = cog_active
+    cdef i64 cpl = pallet_l, cpw = pallet_w
+    cdef int ctr = transitive
 
     cdef i64[:, :, :, ::1] bin_emss = np.zeros(
         (MAX_BINS, MAX_EMS_C, 2, 3), dtype=np.int64)
@@ -77,6 +82,8 @@ def decode_njit_mode_cstr(
     cdef i64 n = bo_v.shape[0]
     cdef double[::1] pal_w = np.zeros(MAX_BINS, dtype=np.float64)
     cdef double[::1] ptl = np.zeros(n, dtype=np.float64)
+    cdef double[::1] tl_inc = np.zeros(n, dtype=np.float64)
+    cdef i64[::1] tl_touched = np.zeros(n, dtype=np.int64)
     cdef double[::1] psx = np.zeros(MAX_BINS, dtype=np.float64)
     cdef double[::1] psy = np.zeros(MAX_BINS, dtype=np.float64)
 
@@ -86,6 +93,7 @@ def decode_njit_mode_cstr(
         w_v, mlot_v, rfs_v, pmw, sr, rc,
         cxmn, cxmx, cymn, cymx, cmlf, cact,
         pal_w, ptl, psx, psy, n,
+        cpl, cpw, ctr, tl_inc, tl_touched,
     )
 
 
@@ -115,6 +123,9 @@ cdef i64 _decode_cstr_012_loop(
     double[::1] pallet_sum_xw,
     double[::1] pallet_sum_yw,
     i64 n,
+    i64 pallet_l, i64 pallet_w, int transitive,
+    double[::1] tl_inc,
+    i64[::1] tl_touched,
 ) noexcept nogil:
     """All-nogil inner driver — cstr modes 0/1/2."""
     cdef i64 n_bins = 0
@@ -202,7 +213,16 @@ cdef i64 _decode_cstr_012_loop(
                     placement_top_loads, n,
                     b, bin_best_x, bin_best_y, bin_best_z,
                     dx, dy, dz, cand_weight, support_ratio,
-                    require_centroid, <int>rfs[box_idx]):
+                    require_centroid, <int>rfs[box_idx],
+                    pallet_l, pallet_w):
+                continue
+            # Transitive load check (F19): the direct check never rejects a
+            # fresh column — dry-run the downward flow too.
+            if transitive != 0 and not _ck_load_transitive(
+                    placements_out, dims_all, bps_order, mlot,
+                    placement_top_loads, n,
+                    b, bin_best_x, bin_best_y, bin_best_z,
+                    dx, dy, dz, cand_weight, tl_inc, tl_touched):
                 continue
 
             # CoG envelope (only when cog_active).
@@ -237,11 +257,18 @@ cdef i64 _decode_cstr_012_loop(
             placements_out[i, 4] = bin_best_z
             placements_out[i, 5] = 1
             pallet_weights[b] += cand_weight
-            _ap_load_contribution(
-                placements_out, dims_all, bps_order,
-                placement_top_loads, n,
-                b, bin_best_x, bin_best_y, bin_best_z,
-                dx, dy, dz, cand_weight)
+            if transitive != 0:
+                _ap_load_contribution_transitive(
+                    placements_out, dims_all, bps_order,
+                    placement_top_loads, n,
+                    b, bin_best_x, bin_best_y, bin_best_z,
+                    dx, dy, dz, cand_weight, tl_inc, tl_touched)
+            else:
+                _ap_load_contribution(
+                    placements_out, dims_all, bps_order,
+                    placement_top_loads, n,
+                    b, bin_best_x, bin_best_y, bin_best_z,
+                    dx, dy, dz, cand_weight)
             _ap_cog_contribution(
                 bin_best_x, bin_best_y, dx, dy,
                 cand_weight, b, pallet_sum_xw, pallet_sum_yw)
@@ -319,6 +346,18 @@ cdef i64 _decode_cstr_012_loop(
             dx = dims_all[box_idx, r, 0]
             dy = dims_all[box_idx, r, 1]
             dz = dims_all[box_idx, r, 2]
+            # Deck-contact check (F17): with overhang, L/W are inflated and
+            # even a floor placement can sit off the raw deck.
+            if pallet_l > 0:
+                if not _ck_load_on_top(
+                        placements_out, dims_all, bps_order, mlot,
+                        placement_top_loads, n,
+                        n_bins, best_x_n, best_y_n, best_z_n,
+                        dx, dy, dz, cand_weight, support_ratio,
+                        require_centroid, <int>rfs[box_idx],
+                        pallet_l, pallet_w):
+                    placements_out[i, 5] = 0
+                    continue
             new_count = _commit_ems(
                 bin_emss[n_bins], bin_ems_count[n_bins],
                 best_x_n, best_y_n, best_z_n,
@@ -456,6 +495,7 @@ def decode_blocks_njit_mode_cstr(
     require_centroid,
     cog_x_min, cog_x_max, cog_y_min, cog_y_max,
     cog_min_load_frac, cog_active,
+    pallet_l=0, pallet_w=0, transitive=0,
 ):
     """Cython implementation of decode_blocks_njit_mode_cstr (cstr mode 4)."""
     cdef i64 cL = L, cW = W, cH = H
@@ -468,6 +508,8 @@ def decode_blocks_njit_mode_cstr(
     cdef double cymn = cog_y_min, cymx = cog_y_max
     cdef double cmlf = cog_min_load_frac
     cdef int cact = cog_active
+    cdef i64 cpl = pallet_l, cpw = pallet_w
+    cdef int ctr = transitive
 
     cdef i64[:, :, :, ::1] bin_emss = np.zeros(
         (MAX_BINS, MAX_EMS_C, 2, 3), dtype=np.int64)
@@ -489,6 +531,8 @@ def decode_blocks_njit_mode_cstr(
     cdef i64[::1] sku_remaining = np.zeros(cn_skus, dtype=np.int64)
     cdef double[::1] pal_w = np.zeros(MAX_BINS, dtype=np.float64)
     cdef double[::1] ptl = np.zeros(n, dtype=np.float64)
+    cdef double[::1] tl_inc = np.zeros(n, dtype=np.float64)
+    cdef i64[::1] tl_touched = np.zeros(n, dtype=np.int64)
     cdef double[::1] psx = np.zeros(MAX_BINS, dtype=np.float64)
     cdef double[::1] psy = np.zeros(MAX_BINS, dtype=np.float64)
 
@@ -498,6 +542,7 @@ def decode_blocks_njit_mode_cstr(
         w_v, mlot_v, rfs_v, pmw, sr, rc,
         cxmn, cxmx, cymn, cymx, cmlf, cact,
         placed, sku_remaining, pal_w, ptl, psx, psy, n,
+        cpl, cpw, ctr, tl_inc, tl_touched,
     )
 
 
@@ -529,6 +574,9 @@ cdef i64 _decode_cstr_blocks_loop(
     double[::1] pallet_sum_xw,
     double[::1] pallet_sum_yw,
     i64 n,
+    i64 pallet_l, i64 pallet_w, int transitive,
+    double[::1] tl_inc,
+    i64[::1] tl_touched,
 ) noexcept nogil:
     """All-nogil cstr mode 4 inner driver."""
     cdef i64 n_bins = 0
@@ -625,7 +673,18 @@ cdef i64 _decode_cstr_blocks_loop(
                             placement_top_loads, n,
                             b, bx_px, bx_py, best_z,
                             dx, dy, dz, box_weight, support_ratio,
-                            require_centroid, <int>rfs[box_idx]):
+                            require_centroid, <int>rfs[box_idx],
+                            pallet_l, pallet_w):
+                        bottom_ok = False
+                        break
+                    # Transitive (F19): each bottom box relays its whole
+                    # column (m*w) to the external chain below.
+                    if transitive != 0 and not _ck_load_transitive(
+                            placements_out, dims_all, bps_order, mlot,
+                            placement_top_loads, n,
+                            b, bx_px, bx_py, best_z,
+                            dx, dy, dz, <double>m * box_weight,
+                            tl_inc, tl_touched):
                         bottom_ok = False
                         break
                 if not bottom_ok:
@@ -638,7 +697,15 @@ cdef i64 _decode_cstr_blocks_loop(
                         placement_top_loads, n,
                         b, best_x, best_y, best_z,
                         dx, dy, dz, box_weight, support_ratio,
-                        require_centroid, <int>rfs[box_idx]):
+                        require_centroid, <int>rfs[box_idx],
+                        pallet_l, pallet_w):
+                    continue
+                if transitive != 0 and not _ck_load_transitive(
+                        placements_out, dims_all, bps_order, mlot,
+                        placement_top_loads, n,
+                        b, best_x, best_y, best_z,
+                        dx, dy, dz, <double>m * box_weight,
+                        tl_inc, tl_touched):
                     continue
             # Phase 2d: CoG envelope (block as point mass at bottom centroid).
             if cog_active != 0:
@@ -673,11 +740,22 @@ cdef i64 _decode_cstr_blocks_loop(
                         continue
                     if sku_id_per_box[bps_order[jj]] != my_sku:
                         continue
-                    _ap_load_contribution(
-                        placements_out, dims_all, bps_order,
-                        placement_top_loads, n,
-                        b, placements_out[jj, 2], placements_out[jj, 3],
-                        best_z, dx, dy, dz, box_weight)
+                    if transitive != 0:
+                        # Bottom box carries its whole column (internal
+                        # seeding is already transitive): the FULL column
+                        # weight flows to external supporters and on down.
+                        _ap_load_contribution_transitive(
+                            placements_out, dims_all, bps_order,
+                            placement_top_loads, n,
+                            b, placements_out[jj, 2], placements_out[jj, 3],
+                            best_z, dx, dy, dz, <double>m * box_weight,
+                            tl_inc, tl_touched)
+                    else:
+                        _ap_load_contribution(
+                            placements_out, dims_all, bps_order,
+                            placement_top_loads, n,
+                            b, placements_out[jj, 2], placements_out[jj, 3],
+                            best_z, dx, dy, dz, box_weight)
                     applied += 1
             # CoG: per-box point-mass contribution for every block box.
             if box_weight > 0:
@@ -783,6 +861,38 @@ cdef i64 _decode_cstr_blocks_loop(
             placed[i] = 1
             sku_remaining[my_sku] -= 1
             continue
+        # Deck-contact check (F17): under overhang the bottom layer can
+        # extend past the raw deck; every bottom box needs deck contact.
+        # Mirror Phase 2c's fallback: shrink to 1x1 before giving up.
+        if pallet_l > 0:
+            bottom_ok = True
+            for bx_ll in range(l):
+                for bx_kk in range(k):
+                    if not _ck_load_on_top(
+                            placements_out, dims_all, bps_order, mlot,
+                            placement_top_loads, n,
+                            n_bins, best_x_n + bx_kk * dx,
+                            best_y_n + bx_ll * dy, best_z_n,
+                            dx, dy, dz, box_weight, support_ratio,
+                            require_centroid, <int>rfs[box_idx],
+                            pallet_l, pallet_w):
+                        bottom_ok = False
+                        break
+                if not bottom_ok:
+                    break
+            if not bottom_ok:
+                k = 1; l = 1
+                if not _ck_load_on_top(
+                        placements_out, dims_all, bps_order, mlot,
+                        placement_top_loads, n,
+                        n_bins, best_x_n, best_y_n, best_z_n,
+                        dx, dy, dz, box_weight, support_ratio,
+                        require_centroid, <int>rfs[box_idx],
+                        pallet_l, pallet_w):
+                    placements_out[i, 5] = 0
+                    placed[i] = 1
+                    sku_remaining[my_sku] -= 1
+                    continue
         # Floor placement (z=0): no support/load check needed for bottom layer.
         placed_so_far = _commit_block_placements(
             placements_out, placed, bps_order, sku_id_per_box,
@@ -859,6 +969,7 @@ def decode_layer_njit_cstr(
     require_centroid,
     cog_x_min, cog_x_max, cog_y_min, cog_y_max,
     cog_min_load_frac, cog_active,
+    pallet_l=0, pallet_w=0, transitive=0,
 ):
     """Cython implementation of decode_layer_njit_cstr (cstr mode 3)."""
     cdef i64 cL = L, cW = W, cH = H
@@ -870,6 +981,8 @@ def decode_layer_njit_cstr(
     cdef double cymn = cog_y_min, cymx = cog_y_max
     cdef double cmlf = cog_min_load_frac
     cdef int cact = cog_active
+    cdef i64 cpl = pallet_l, cpw = pallet_w
+    cdef int ctr = transitive
 
     cdef i64[:, :, :, ::1] bin_emss = np.zeros(
         (MAX_BINS, MAX_EMS_C, 2, 3), dtype=np.int64)
@@ -890,6 +1003,8 @@ def decode_layer_njit_cstr(
     cdef i64 n = bo_v.shape[0]
     cdef double[::1] pal_w = np.zeros(MAX_BINS, dtype=np.float64)
     cdef double[::1] ptl = np.zeros(n, dtype=np.float64)
+    cdef double[::1] tl_inc = np.zeros(n, dtype=np.float64)
+    cdef i64[::1] tl_touched = np.zeros(n, dtype=np.int64)
     cdef double[::1] psx = np.zeros(MAX_BINS, dtype=np.float64)
     cdef double[::1] psy = np.zeros(MAX_BINS, dtype=np.float64)
 
@@ -899,6 +1014,7 @@ def decode_layer_njit_cstr(
         w_v, mlot_v, rfs_v, pmw, sr, rc,
         cxmn, cxmx, cymn, cymx, cmlf, cact,
         pal_w, ptl, psx, psy, n,
+        cpl, cpw, ctr, tl_inc, tl_touched,
     )
 
 
@@ -929,6 +1045,9 @@ cdef i64 _decode_cstr_layer_loop(
     double[::1] pallet_sum_xw,
     double[::1] pallet_sum_yw,
     i64 n,
+    i64 pallet_l, i64 pallet_w, int transitive,
+    double[::1] tl_inc,
+    i64[::1] tl_touched,
 ) noexcept nogil:
     """All-nogil cstr mode 3 inner driver."""
     cdef i64 n_bins = 0
@@ -990,12 +1109,19 @@ cdef i64 _decode_cstr_layer_loop(
                         pallet_max_weight,
                         cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                         cog_min_load_frac)
+                if cog_ok and transitive != 0:
+                    cog_ok = _ck_load_transitive(
+                        placements_out, dims_all, bps_order, mlot,
+                        placement_top_loads, n,
+                        b, bin_best_x, bin_best_y, bin_best_z,
+                        dx, dy, dz, cand_weight, tl_inc, tl_touched)
                 if cog_ok and _ck_load_on_top(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, bin_best_x, bin_best_y, bin_best_z,
                         dx, dy, dz, cand_weight, support_ratio,
-                        require_centroid, <int>rfs[box_idx]):
+                        require_centroid, <int>rfs[box_idx],
+                        pallet_l, pallet_w):
                     new_count = _commit_ems(
                         bin_emss[b], bin_ems_count[b],
                         bin_best_x, bin_best_y, bin_best_z,
@@ -1016,11 +1142,18 @@ cdef i64 _decode_cstr_layer_loop(
                     placements_out[i, 4] = bin_best_z
                     placements_out[i, 5] = 1
                     pallet_weights[b] += cand_weight
-                    _ap_load_contribution(
-                        placements_out, dims_all, bps_order,
-                        placement_top_loads, n,
-                        b, bin_best_x, bin_best_y, bin_best_z,
-                        dx, dy, dz, cand_weight)
+                    if transitive != 0:
+                        _ap_load_contribution_transitive(
+                            placements_out, dims_all, bps_order,
+                            placement_top_loads, n,
+                            b, bin_best_x, bin_best_y, bin_best_z,
+                            dx, dy, dz, cand_weight, tl_inc, tl_touched)
+                    else:
+                        _ap_load_contribution(
+                            placements_out, dims_all, bps_order,
+                            placement_top_loads, n,
+                            b, bin_best_x, bin_best_y, bin_best_z,
+                            dx, dy, dz, cand_weight)
                     _ap_cog_contribution(
                         bin_best_x, bin_best_y, dx, dy,
                         cand_weight, b, pallet_sum_xw, pallet_sum_yw)
@@ -1068,12 +1201,19 @@ cdef i64 _decode_cstr_layer_loop(
                         pallet_max_weight,
                         cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                         cog_min_load_frac)
+                if cog_ok and transitive != 0:
+                    cog_ok = _ck_load_transitive(
+                        placements_out, dims_all, bps_order, mlot,
+                        placement_top_loads, n,
+                        b, new_slab_start, new_best_y, new_best_z,
+                        dx, dy, dz, cand_weight, tl_inc, tl_touched)
                 if cog_ok and _ck_load_on_top(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, new_slab_start, new_best_y, new_best_z,
                         dx, dy, dz, cand_weight, support_ratio,
-                        require_centroid, <int>rfs[box_idx]):
+                        require_centroid, <int>rfs[box_idx],
+                        pallet_l, pallet_w):
                     new_count = _commit_ems(
                         bin_emss[b], bin_ems_count[b],
                         new_slab_start, new_best_y, new_best_z,
@@ -1096,11 +1236,18 @@ cdef i64 _decode_cstr_layer_loop(
                     pallet_weights[b] += cand_weight
                     bin_slab_min_x[b] = new_slab_start
                     bin_slab_max_x[b] = new_slab_start + dx
-                    _ap_load_contribution(
-                        placements_out, dims_all, bps_order,
-                        placement_top_loads, n,
-                        b, new_slab_start, new_best_y, new_best_z,
-                        dx, dy, dz, cand_weight)
+                    if transitive != 0:
+                        _ap_load_contribution_transitive(
+                            placements_out, dims_all, bps_order,
+                            placement_top_loads, n,
+                            b, new_slab_start, new_best_y, new_best_z,
+                            dx, dy, dz, cand_weight, tl_inc, tl_touched)
+                    else:
+                        _ap_load_contribution(
+                            placements_out, dims_all, bps_order,
+                            placement_top_loads, n,
+                            b, new_slab_start, new_best_y, new_best_z,
+                            dx, dy, dz, cand_weight)
                     _ap_cog_contribution(
                         new_slab_start, new_best_y, dx, dy,
                         cand_weight, b, pallet_sum_xw, pallet_sum_yw)
@@ -1146,6 +1293,19 @@ cdef i64 _decode_cstr_layer_loop(
         dx = dims_all[box_idx, seed_rot, 0]
         dy = dims_all[box_idx, seed_rot, 1]
         dz = dims_all[box_idx, seed_rot, 2]
+        # Deck-contact check (F17): the seed sits at the origin, so this
+        # only bites when the box itself outspans the raw deck under
+        # overhang-inflated L/W.
+        if pallet_l > 0:
+            if not _ck_load_on_top(
+                    placements_out, dims_all, bps_order, mlot,
+                    placement_top_loads, n,
+                    n_bins, 0, seed_y, seed_z,
+                    dx, dy, dz, cand_weight, support_ratio,
+                    require_centroid, <int>rfs[box_idx],
+                    pallet_l, pallet_w):
+                placements_out[i, 5] = 0
+                continue
         new_count = _commit_ems(
             bin_emss[n_bins], bin_ems_count[n_bins],
             0, seed_y, seed_z, dx, seed_y + dy, seed_z + dz, scratch)
@@ -1191,6 +1351,7 @@ def decode_batch_njit_mode_cstr(
     cog_x_min, cog_x_max, cog_y_min, cog_y_max,
     cog_min_load_frac, cog_active,
     placements_out_all, n_bins_out,
+    pallet_l=0, pallet_w=0, transitive=0,
 ):
     """Batch-decode pop_size chromosomes for cstr modes 0/1/2 in parallel."""
     cdef Py_ssize_t pop_size = chromosomes.shape[0]
@@ -1205,6 +1366,8 @@ def decode_batch_njit_mode_cstr(
     cdef double cymn = cog_y_min, cymx = cog_y_max
     cdef double cmlf = cog_min_load_frac
     cdef int cact = cog_active
+    cdef i64 cpl = pallet_l, cpw = pallet_w
+    cdef int ctr = transitive
 
     bps = np.ascontiguousarray(chromosomes)[:, :n_boxes]
     orders_np = np.argsort(bps, axis=1).astype(np.int64)
@@ -1224,6 +1387,8 @@ def decode_batch_njit_mode_cstr(
         (pop_size, MAX_EMS_C, 2, 3), dtype=np.int64)
     cdef double[:, ::1] palw_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
     cdef double[:, ::1] ptl_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
+    cdef double[:, ::1] ti_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
+    cdef i64[:, ::1] tt_all = np.zeros((pop_size, n_boxes), dtype=np.int64)
     cdef double[:, ::1] psx_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
     cdef double[:, ::1] psy_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
 
@@ -1237,6 +1402,7 @@ def decode_batch_njit_mode_cstr(
                 w_v, mlot_v, rfs_v, pmw, sr, rc,
                 cxmn, cxmx, cymn, cymx, cmlf, cact,
                 palw_all[i], ptl_all[i], psx_all[i], psy_all[i], n_boxes,
+                cpl, cpw, ctr, ti_all[i], tt_all[i],
             )
     return n_bins_out
 
@@ -1249,6 +1415,7 @@ def decode_batch_blocks_njit_mode_cstr(
     cog_x_min, cog_x_max, cog_y_min, cog_y_max,
     cog_min_load_frac, cog_active,
     placements_out_all, n_bins_out, n_skus,
+    pallet_l=0, pallet_w=0, transitive=0,
 ):
     """Batch-decode pop_size chromosomes for cstr mode 4 in parallel."""
     cdef Py_ssize_t pop_size = chromosomes.shape[0]
@@ -1263,6 +1430,8 @@ def decode_batch_blocks_njit_mode_cstr(
     cdef double cymn = cog_y_min, cymx = cog_y_max
     cdef double cmlf = cog_min_load_frac
     cdef int cact = cog_active
+    cdef i64 cpl = pallet_l, cpw = pallet_w
+    cdef int ctr = transitive
 
     bps = np.ascontiguousarray(chromosomes)[:, :n_boxes]
     orders_np = np.argsort(bps, axis=1).astype(np.int64)
@@ -1285,6 +1454,8 @@ def decode_batch_blocks_njit_mode_cstr(
     cdef i64[:, ::1] skur_all = np.zeros((pop_size, cn_skus), dtype=np.int64)
     cdef double[:, ::1] palw_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
     cdef double[:, ::1] ptl_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
+    cdef double[:, ::1] ti_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
+    cdef i64[:, ::1] tt_all = np.zeros((pop_size, n_boxes), dtype=np.int64)
     cdef double[:, ::1] psx_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
     cdef double[:, ::1] psy_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
 
@@ -1299,6 +1470,7 @@ def decode_batch_blocks_njit_mode_cstr(
                 cxmn, cxmx, cymn, cymx, cmlf, cact,
                 placed_all[i], skur_all[i],
                 palw_all[i], ptl_all[i], psx_all[i], psy_all[i], n_boxes,
+                cpl, cpw, ctr, ti_all[i], tt_all[i],
             )
     return n_bins_out
 
@@ -1311,6 +1483,7 @@ def decode_batch_layer_njit_cstr(
     cog_x_min, cog_x_max, cog_y_min, cog_y_max,
     cog_min_load_frac, cog_active,
     placements_out_all, n_bins_out,
+    pallet_l=0, pallet_w=0, transitive=0,
 ):
     """Batch-decode pop_size chromosomes for cstr mode 3 (layer) in parallel."""
     cdef Py_ssize_t pop_size = chromosomes.shape[0]
@@ -1324,6 +1497,8 @@ def decode_batch_layer_njit_cstr(
     cdef double cymn = cog_y_min, cymx = cog_y_max
     cdef double cmlf = cog_min_load_frac
     cdef int cact = cog_active
+    cdef i64 cpl = pallet_l, cpw = pallet_w
+    cdef int ctr = transitive
 
     bps = np.ascontiguousarray(chromosomes)[:, :n_boxes]
     orders_np = np.argsort(bps, axis=1).astype(np.int64)
@@ -1345,6 +1520,8 @@ def decode_batch_layer_njit_cstr(
         (pop_size, MAX_EMS_C, 2, 3), dtype=np.int64)
     cdef double[:, ::1] palw_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
     cdef double[:, ::1] ptl_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
+    cdef double[:, ::1] ti_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
+    cdef i64[:, ::1] tt_all = np.zeros((pop_size, n_boxes), dtype=np.int64)
     cdef double[:, ::1] psx_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
     cdef double[:, ::1] psy_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
 
@@ -1358,5 +1535,6 @@ def decode_batch_layer_njit_cstr(
                 w_v, mlot_v, rfs_v, pmw, sr, rc,
                 cxmn, cxmx, cymn, cymx, cmlf, cact,
                 palw_all[i], ptl_all[i], psx_all[i], psy_all[i], n_boxes,
+                cpl, cpw, ctr, ti_all[i], tt_all[i],
             )
     return n_bins_out

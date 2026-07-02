@@ -100,6 +100,31 @@ def validate(result: PackResult, pallet: Pallet,
             sup_cache[id(p)] = _supporters(p, placements) if p.z > EPS else []
         for p in placements:
             if p.z <= EPS:
+                # Floor placement. Under overhang the box can extend past
+                # the deck — it must still rest ON it (F17): deck-contact
+                # area >= the effective support ratio of its footprint.
+                # Mirrors the engines; inert when overhang is off.
+                if not cfg.allow_pallet_overhang:
+                    continue
+                stability_active = (cfg.support_ratio > 0.0
+                                    or cfg.require_centroid_supported
+                                    or p.box.requires_full_support)
+                if not stability_active:
+                    continue      # pure-geometric mode (BR): floats allowed
+                fp = p.dx * p.dy
+                dxc = min(p.x2, float(pallet.length)) - max(p.x, 0.0)
+                dyc = min(p.y2, float(pallet.width)) - max(p.y, 0.0)
+                contact = dxc * dyc if (dxc > 0 and dyc > 0) else 0.0
+                min_support = (1.0 if p.box.requires_full_support
+                               else cfg.support_ratio)
+                if contact <= EPS or (
+                        min_support > 0.0 and
+                        (fp <= 0 or contact / fp < min_support - EPS)):
+                    errors.append(
+                        f"{st.pallet_id}: {p.box.id} floor placement has "
+                        f"only {contact / fp if fp > 0 else 0.0:.0%} deck "
+                        f"contact (min {min_support:.0%})"
+                    )
                 continue
             stability_active = (cfg.support_ratio > 0.0
                                 or cfg.require_centroid_supported
@@ -140,24 +165,30 @@ def validate(result: PackResult, pallet: Pallet,
                     f"{st.pallet_id}: {p.box.id} uses disallowed rotation "
                     f"{p.rotation.name}"
                 )
-        # 6. Load bearing — DIRECT supporters, weighted by contact area.
-        #    Deliberately direct-only, NOT transitive: the BRKGA constraint
-        #    decoders' commit model (_apply_load_contribution_njit) adds each
-        #    box's share to its direct supporters without propagating down,
-        #    so decoder-legal results only guarantee the direct bound. The v2
-        #    engine's _propagate_load is transitive (stricter) — its outputs
-        #    pass this check too. A transitive check here would falsely
-        #    reject BRKGA-path results. (Engine inconsistency recorded as
-        #    finding F15 in docs/06_hardening_plan.md.)
+        # 6. Load bearing, weighted by contact area. Two accumulation models
+        #    mirroring the engines (hardening round 2, F19):
+        #    - transitive_load_bearing OFF (default): DIRECT supporters only —
+        #      the BRKGA decoders' historical commit model
+        #      (_apply_load_contribution_njit) adds each box's share to its
+        #      direct supporters without propagating down, so decoder-legal
+        #      results only guarantee the direct bound (was finding F15).
+        #    - transitive_load_bearing ON: each box's outflow (own weight +
+        #      everything that arrived on it) propagates down the whole
+        #      support chain — the v2 engine's _propagate_load model, now
+        #      shared by the decoders' transitive commit sibling. Boxes are
+        #      processed top-down (descending bottom-z), so every box's
+        #      arriving load is final before it distributes.
         if cfg.enforce_load_bearing:
+            transitive = bool(getattr(cfg, "transitive_load_bearing", False))
             load_on: Dict[int, float] = {id(p): 0.0 for p in placements}
-            for p in placements:
+            for p in sorted(placements, key=lambda q: -q.z):
                 sups = sup_cache[id(p)]
                 sup_area = sum(a for _, a in sups)
                 if sup_area <= 0:
                     continue
+                outflow = p.box.weight + (load_on[id(p)] if transitive else 0.0)
                 for s, a in sups:
-                    load_on[id(s)] += p.box.weight * (a / sup_area)
+                    load_on[id(s)] += outflow * (a / sup_area)
             for q in placements:
                 if load_on[id(q)] > q.box.max_load_on_top + EPS:
                     errors.append(

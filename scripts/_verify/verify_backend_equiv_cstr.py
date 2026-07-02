@@ -156,7 +156,8 @@ def make_constraint_config(rng, n_boxes, L, W, H, *, force_tight_cog=False,
 # Single-decoder runners (Cython + Numba), returning (placements_out, n_bins)
 # ---------------------------------------------------------------------------
 
-def run_cstr_012(backend, order, n_rots, dims, L, W, H, mp, mode, ca):
+def run_cstr_012(backend, order, n_rots, dims, L, W, H, mp, mode, ca,
+                 pl=0, pw=0, tr=0):
     n = order.shape[0]
     po = np.zeros((n, 6), dtype=np.int64)
     nb_ = backend.decode_njit_mode_cstr(
@@ -165,11 +166,13 @@ def run_cstr_012(backend, order, n_rots, dims, L, W, H, mp, mode, ca):
         ca["pallet_max_weight"], ca["support_ratio"], ca["require_centroid"],
         ca["cog_x_min"], ca["cog_x_max"], ca["cog_y_min"], ca["cog_y_max"],
         ca["cog_min_load_frac"], ca["cog_active"],
+        pl, pw, tr,
     )
     return po, int(nb_)
 
 
-def run_cstr_layer(backend, order, n_rots, dims, L, W, H, mp, ca):
+def run_cstr_layer(backend, order, n_rots, dims, L, W, H, mp, ca,
+                   pl=0, pw=0, tr=0):
     n = order.shape[0]
     po = np.zeros((n, 6), dtype=np.int64)
     nb_ = backend.decode_layer_njit_cstr(
@@ -178,11 +181,13 @@ def run_cstr_layer(backend, order, n_rots, dims, L, W, H, mp, ca):
         ca["pallet_max_weight"], ca["support_ratio"], ca["require_centroid"],
         ca["cog_x_min"], ca["cog_x_max"], ca["cog_y_min"], ca["cog_y_max"],
         ca["cog_min_load_frac"], ca["cog_active"],
+        pl, pw, tr,
     )
     return po, int(nb_)
 
 
-def run_cstr_blocks(backend, order, n_rots, dims, sku, L, W, H, mp, n_skus, ca):
+def run_cstr_blocks(backend, order, n_rots, dims, sku, L, W, H, mp, n_skus, ca,
+                    pl=0, pw=0, tr=0):
     n = order.shape[0]
     po = np.zeros((n, 6), dtype=np.int64)
     nb_ = backend.decode_blocks_njit_mode_cstr(
@@ -191,6 +196,7 @@ def run_cstr_blocks(backend, order, n_rots, dims, sku, L, W, H, mp, n_skus, ca):
         ca["pallet_max_weight"], ca["support_ratio"], ca["require_centroid"],
         ca["cog_x_min"], ca["cog_x_max"], ca["cog_y_min"], ca["cog_y_max"],
         ca["cog_min_load_frac"], ca["cog_active"],
+        pl, pw, tr,
     )
     return po, int(nb_)
 
@@ -257,6 +263,9 @@ def main():
         "cog_tight": 0, "cog_loose": 0,
         "cmlf": {f: 0 for f in COG_MIN_LOAD_FRACS},
         "overhang0": 0, "overhangP": 0,
+        "transitive_on": 0,
+        "deck_rejections_seen": 0,
+        "transitive_chain_seen": 0,
         "z_gt0_seen": 0,      # instances where some box placed at z>0
         "rejections_seen": 0,  # instances where some box NOT placed (col5==0)
         "multibin": 0,         # instances using >1 bin
@@ -279,10 +288,17 @@ def main():
         overhang = OVERHANGS[it % len(OVERHANGS)]
         L = L0 + 2 * overhang
         W = W0 + 2 * overhang
+        # Round-2: raw deck dims travel with overhang (F17 deck check) and
+        # the transitive load flag alternates (F19).
+        pl = L0 if overhang > 0 else 0
+        pw = W0 if overhang > 0 else 0
+        tr = int((it // 2) % 2)
         if overhang == 0:
             cov["overhang0"] += 1
         else:
             cov["overhangP"] += 1
+        if tr:
+            cov["transitive_on"] += 1
 
         n_rots, dims = make_boxes(rng, n_boxes, L, W, H)
         order = make_order(rng, n_boxes)
@@ -321,8 +337,8 @@ def main():
 
         # ---- cstr modes 0/1/2 ----
         for mode in (0, 1, 2):
-            po_cy, nb_cy = run_cstr_012(cy, order, n_rots, dims, L, W, H, mp, mode, ca)
-            po_nb, nb_nb = run_cstr_012(nb, order, n_rots, dims, L, W, H, mp, mode, ca)
+            po_cy, nb_cy = run_cstr_012(cy, order, n_rots, dims, L, W, H, mp, mode, ca, pl, pw, tr)
+            po_nb, nb_nb = run_cstr_012(nb, order, n_rots, dims, L, W, H, mp, mode, ca, pl, pw, tr)
             key = f"cstr{mode}"
             n_compared[key] += 1
             # Behaviour observation (use Cython output as reference).
@@ -343,8 +359,8 @@ def main():
                     first_fail_dumped = True
 
         # ---- cstr mode 3 (layer) ----
-        po_cy, nb_cy = run_cstr_layer(cy, order, n_rots, dims, L, W, H, mp, ca)
-        po_nb, nb_nb = run_cstr_layer(nb, order, n_rots, dims, L, W, H, mp, ca)
+        po_cy, nb_cy = run_cstr_layer(cy, order, n_rots, dims, L, W, H, mp, ca, pl, pw, tr)
+        po_nb, nb_nb = run_cstr_layer(nb, order, n_rots, dims, L, W, H, mp, ca, pl, pw, tr)
         n_compared["cstr3_layer"] += 1
         if not (np.array_equal(po_cy, po_nb) and nb_cy == nb_nb):
             n_fail["cstr3_layer"] += 1
@@ -357,8 +373,8 @@ def main():
                 first_fail_dumped = True
 
         # ---- cstr mode 4 (blocks) ----
-        po_cy, nb_cy = run_cstr_blocks(cy, order, n_rots, dims, sku, L, W, H, mp, n_skus, ca)
-        po_nb, nb_nb = run_cstr_blocks(nb, order, n_rots, dims, sku, L, W, H, mp, n_skus, ca)
+        po_cy, nb_cy = run_cstr_blocks(cy, order, n_rots, dims, sku, L, W, H, mp, n_skus, ca, pl, pw, tr)
+        po_nb, nb_nb = run_cstr_blocks(nb, order, n_rots, dims, sku, L, W, H, mp, n_skus, ca, pl, pw, tr)
         n_compared["cstr4_blocks"] += 1
         if not (np.array_equal(po_cy, po_nb) and nb_cy == nb_nb):
             n_fail["cstr4_blocks"] += 1
@@ -369,6 +385,10 @@ def main():
                 dump_mismatch("cstr4_blocks", meta, order, n_rots, dims, sku, ca,
                               po_cy, nb_cy, po_nb, nb_nb)
                 first_fail_dumped = True
+
+    # ---- Round-2 battery (F17 deck check / F19 transitive) ----
+    print("=== Round-2 battery (deck contact + transitive load) ===")
+    r2_fail = run_round2_battery(cov)
 
     # ---- Targeted edge-case battery (deterministic, no RNG) ----
     print("=== Edge-case battery (extreme guard values) ===")
@@ -391,6 +411,10 @@ def main():
           f"(tight={cov['cog_tight']} loose={cov['cog_loose']})")
     print(f"  cog_min_load_frac buckets: {cov['cmlf']}")
     print(f"  max_overhang: zero={cov['overhang0']} positive={cov['overhangP']}")
+    print(f"  transitive flag on: {cov['transitive_on']}")
+    print(f"  ROUND-2 branch coverage: deck_rejections_seen="
+          f"{cov['deck_rejections_seen']} transitive_chain_seen="
+          f"{cov['transitive_chain_seen']}")
     print(f"  behaviour: z>0 placements seen={cov['z_gt0_seen']} "
           f"rejections(col5==0) seen={cov['rejections_seen']} "
           f"multibin seen={cov['multibin']}")
@@ -404,12 +428,130 @@ def main():
     if worst is not None:
         print(f"  Worst mismatch: {worst[1]} with {worst[0]} differing rows @ {worst[2]}")
 
-    overall_ok = (total_fail == 0) and (edge_fail == 0) and (eps_fail == 0)
+    overall_ok = (total_fail == 0) and (edge_fail == 0) and (eps_fail == 0) \
+        and (r2_fail == 0) \
+        and cov["deck_rejections_seen"] > 0 and cov["transitive_chain_seen"] > 0
     grand = total_comp + 70 + eps_comp
+    if cov["deck_rejections_seen"] == 0 or cov["transitive_chain_seen"] == 0:
+        print("\n  !! ROUND-2 COVERAGE HOLE: a new branch never fired")
     print(f"\n=== RESULT: {'PASS' if overall_ok else 'FAIL'} "
           f"({grand} total comparisons; "
-          f"{total_fail + edge_fail + eps_fail} total mismatches) ===")
+          f"{total_fail + edge_fail + eps_fail + r2_fail} total mismatches) ===")
     return 0 if overall_ok else 1
+
+
+
+def run_round2_battery(cov):
+    """Deterministic F17/F19 cases: prove the new branches FIRE (behavior
+    differs vs the legacy sentinel/flag-off run) and stay cy==nb
+    bit-identical. Returns the mismatch count."""
+    fails = 0
+
+    def base_ca(n, mlot_val=_NO_LIMIT, w=1.0):
+        return {
+            "weights": np.full(n, w, dtype=np.float64),
+            "mlot": np.full(n, mlot_val, dtype=np.float64),
+            "rfs": np.zeros(n, dtype=np.int64),
+            "pallet_max_weight": _NO_LIMIT,
+            "support_ratio": 0.8, "require_centroid": 0,
+            "cog_x_min": -_NO_LIMIT, "cog_x_max": _NO_LIMIT,
+            "cog_y_min": -_NO_LIMIT, "cog_y_max": _NO_LIMIT,
+            "cog_min_load_frac": 0.0, "cog_active": 0,
+        }
+
+    # ---- F17: narrow raw deck (300x300) + overhang to 600x600. Without the
+    # deck check the floor spreads across the whole inflated area; with it,
+    # off-deck floor spots are rejected.
+    n = 6
+    n_rots = np.full(n, 1, dtype=np.int64)
+    dims = np.zeros((n, 6, 3), dtype=np.int64)
+    dims[:, 0] = (200, 200, 100)
+    order = np.arange(n, dtype=np.int64)
+    ca = base_ca(n)
+    for mode in (0, 1, 2):
+        po_off, _ = run_cstr_012(cy, order, n_rots, dims, 600, 600, 400, 1,
+                                 mode, ca, 0, 0, 0)
+        po_c, nbc = run_cstr_012(cy, order, n_rots, dims, 600, 600, 400, 1,
+                                 mode, ca, 300, 300, 0)
+        po_n, nbn = run_cstr_012(nb, order, n_rots, dims, 600, 600, 400, 1,
+                                 mode, ca, 300, 300, 0)
+        if not (np.array_equal(po_c, po_n) and nbc == nbn):
+            fails += 1
+            print(f"  FAIL round2-deck cstr{mode}: cy != nb")
+        if not np.array_equal(po_c, po_off):
+            cov["deck_rejections_seen"] += 1
+    po_off, _ = run_cstr_layer(cy, order, n_rots, dims, 600, 600, 400, 1,
+                               ca, 0, 0, 0)
+    po_c, nbc = run_cstr_layer(cy, order, n_rots, dims, 600, 600, 400, 1,
+                               ca, 300, 300, 0)
+    po_n, nbn = run_cstr_layer(nb, order, n_rots, dims, 600, 600, 400, 1,
+                               ca, 300, 300, 0)
+    if not (np.array_equal(po_c, po_n) and nbc == nbn):
+        fails += 1
+        print("  FAIL round2-deck layer: cy != nb")
+    if not np.array_equal(po_c, po_off):
+        cov["deck_rejections_seen"] += 1
+    sku = np.zeros(n, dtype=np.int64)
+    po_off, _ = run_cstr_blocks(cy, order, n_rots, dims, sku, 600, 600, 400,
+                                1, 1, ca, 0, 0, 0)
+    po_c, nbc = run_cstr_blocks(cy, order, n_rots, dims, sku, 600, 600, 400,
+                                1, 1, ca, 300, 300, 0)
+    po_n, nbn = run_cstr_blocks(nb, order, n_rots, dims, sku, 600, 600, 400,
+                                1, 1, ca, 300, 300, 0)
+    if not (np.array_equal(po_c, po_n) and nbc == nbn):
+        fails += 1
+        print("  FAIL round2-deck blocks: cy != nb")
+    if not np.array_equal(po_c, po_off):
+        cov["deck_rejections_seen"] += 1
+
+    # ---- F19: pure column with tight finite mlot two levels down. Direct
+    # model stacks all 8 (each link legal); the transitive check must cut
+    # the column.
+    n = 8
+    n_rots = np.full(n, 1, dtype=np.int64)
+    dims = np.zeros((n, 6, 3), dtype=np.int64)
+    dims[:, 0] = (400, 400, 100)
+    order = np.arange(n, dtype=np.int64)
+    ca = base_ca(n, mlot_val=10.5, w=10.0)   # each link 10 <= 10.5
+    for mode in (0, 1, 2):
+        po_d, _ = run_cstr_012(cy, order, n_rots, dims, 400, 400, 1000, 1,
+                               mode, ca, 0, 0, 0)
+        po_c, nbc = run_cstr_012(cy, order, n_rots, dims, 400, 400, 1000, 1,
+                                 mode, ca, 0, 0, 1)
+        po_n, nbn = run_cstr_012(nb, order, n_rots, dims, 400, 400, 1000, 1,
+                                 mode, ca, 0, 0, 1)
+        if not (np.array_equal(po_c, po_n) and nbc == nbn):
+            fails += 1
+            print(f"  FAIL round2-transitive cstr{mode}: cy != nb")
+        if not np.array_equal(po_c, po_d):
+            cov["transitive_chain_seen"] += 1
+    po_d, _ = run_cstr_layer(cy, order, n_rots, dims, 400, 400, 1000, 1,
+                             ca, 0, 0, 0)
+    po_c, nbc = run_cstr_layer(cy, order, n_rots, dims, 400, 400, 1000, 1,
+                               ca, 0, 0, 1)
+    po_n, nbn = run_cstr_layer(nb, order, n_rots, dims, 400, 400, 1000, 1,
+                               ca, 0, 0, 1)
+    if not (np.array_equal(po_c, po_n) and nbc == nbn):
+        fails += 1
+        print("  FAIL round2-transitive layer: cy != nb")
+    if not np.array_equal(po_c, po_d):
+        cov["transitive_chain_seen"] += 1
+    sku = np.zeros(n, dtype=np.int64)
+    po_d, _ = run_cstr_blocks(cy, order, n_rots, dims, sku, 400, 400, 1000,
+                              1, 1, ca, 0, 0, 0)
+    po_c, nbc = run_cstr_blocks(cy, order, n_rots, dims, sku, 400, 400, 1000,
+                                1, 1, ca, 0, 0, 1)
+    po_n, nbn = run_cstr_blocks(nb, order, n_rots, dims, sku, 400, 400, 1000,
+                                1, 1, ca, 0, 0, 1)
+    if not (np.array_equal(po_c, po_n) and nbc == nbn):
+        fails += 1
+        print("  FAIL round2-transitive blocks: cy != nb")
+    if not np.array_equal(po_c, po_d):
+        cov["transitive_chain_seen"] += 1
+    print(f"  round2 battery: {fails} mismatches; "
+          f"deck branch fired in {cov['deck_rejections_seen']} case(s), "
+          f"transitive branch fired in {cov['transitive_chain_seen']} case(s)")
+    return fails
 
 
 def run_epsilon_battery():
@@ -565,6 +707,7 @@ def _compare_all(tag, meta, order, n_rots, dims, sku, n_skus, ca, fails, comps):
 
 def run_edge_cases():
     """Deterministic extreme-guard cases. Returns mismatch count."""
+    pl = pw = tr = 0  # legacy defaults; round-2 args exercised by run_round2_battery
     fails = 0
     L, W, H, mp = 500, 500, 500, 2
     n_boxes = 20
@@ -640,8 +783,8 @@ def run_edge_cases():
     n_ok = 0
     for name, ca in cases.items():
         for mode in (0, 1, 2):
-            po_cy, nb_cy = run_cstr_012(cy, order, n_rots, dims, L, W, H, mp, mode, ca)
-            po_nb, nb_nb = run_cstr_012(nb, order, n_rots, dims, L, W, H, mp, mode, ca)
+            po_cy, nb_cy = run_cstr_012(cy, order, n_rots, dims, L, W, H, mp, mode, ca, pl, pw, tr)
+            po_nb, nb_nb = run_cstr_012(nb, order, n_rots, dims, L, W, H, mp, mode, ca, pl, pw, tr)
             if not (np.array_equal(po_cy, po_nb) and nb_cy == nb_nb):
                 fails += 1
                 dump_mismatch(f"edge:{name}:cstr{mode}", (L, W, H, mp),
@@ -649,8 +792,8 @@ def run_edge_cases():
                               po_cy, nb_cy, po_nb, nb_nb)
             else:
                 n_ok += 1
-        po_cy, nb_cy = run_cstr_layer(cy, order, n_rots, dims, L, W, H, mp, ca)
-        po_nb, nb_nb = run_cstr_layer(nb, order, n_rots, dims, L, W, H, mp, ca)
+        po_cy, nb_cy = run_cstr_layer(cy, order, n_rots, dims, L, W, H, mp, ca, pl, pw, tr)
+        po_nb, nb_nb = run_cstr_layer(nb, order, n_rots, dims, L, W, H, mp, ca, pl, pw, tr)
         if not (np.array_equal(po_cy, po_nb) and nb_cy == nb_nb):
             fails += 1
             dump_mismatch(f"edge:{name}:cstr3_layer", (L, W, H, mp),
@@ -658,8 +801,8 @@ def run_edge_cases():
                           po_cy, nb_cy, po_nb, nb_nb)
         else:
             n_ok += 1
-        po_cy, nb_cy = run_cstr_blocks(cy, order, n_rots, dims, sku, L, W, H, mp, n_skus, ca)
-        po_nb, nb_nb = run_cstr_blocks(nb, order, n_rots, dims, sku, L, W, H, mp, n_skus, ca)
+        po_cy, nb_cy = run_cstr_blocks(cy, order, n_rots, dims, sku, L, W, H, mp, n_skus, ca, pl, pw, tr)
+        po_nb, nb_nb = run_cstr_blocks(nb, order, n_rots, dims, sku, L, W, H, mp, n_skus, ca, pl, pw, tr)
         if not (np.array_equal(po_cy, po_nb) and nb_cy == nb_nb):
             fails += 1
             dump_mismatch(f"edge:{name}:cstr4_blocks", (L, W, H, mp),

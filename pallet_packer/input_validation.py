@@ -50,6 +50,16 @@ DEFAULT_MAX_BOXES = 500
 # sentinel. (Hardening plan C4/F5.)
 MAX_BOX_WEIGHT = 1e15
 
+# Spatial dimensions land in int64 numpy arrays, and the JIT hot paths form
+# int64 products from them (contact areas ~ dim^2, volumes ~ dim^3) that WRAP
+# SILENTLY past 9.22e18 — garbage support/load checks at dims >= ~3e9, corrupt
+# batch fitness at >= ~2.1e6, and a raw OverflowError at >= 2^63. With dims
+# <= 1e6 every area (<= 1e12), volume (<= 1e18), and per-pallet volume sum
+# (bounded by pallet capacity <= 1e18) provably fits. 1e6 units is a
+# kilometre in mm — nothing legitimate is excluded; pick a smaller unit.
+# (Hardening round 2, F16.)
+MAX_DIM = 1_000_000
+
 
 class PackingInputError(ValueError):
     """Raised by check_packing_input when the request is malformed.
@@ -124,6 +134,10 @@ def validate_packing_input(
         if not _is_positive_integer_dim(v):
             problems.append(
                 f"pallet.{name} must be a positive integer (got {v!r})")
+        elif float(v) > MAX_DIM:
+            problems.append(
+                f"pallet.{name} is out of the supported range (must be <= "
+                f"{MAX_DIM}; use a larger unit): got {v!r}")
     mw = getattr(pallet, "max_weight", math.inf)
     if not _is_cap(mw):
         problems.append(
@@ -133,6 +147,10 @@ def validate_packing_input(
     if not _is_nonneg_integer(ov):
         problems.append(
             f"pallet.max_overhang must be a non-negative integer (got {ov!r})")
+    elif float(ov) > MAX_DIM:
+        problems.append(
+            f"pallet.max_overhang is out of the supported range (must be <= "
+            f"{MAX_DIM}): got {ov!r}")
 
     # ---- boxes ----
     if boxes is None or len(boxes) == 0:
@@ -151,6 +169,10 @@ def validate_packing_input(
             if not _is_positive_integer_dim(v):
                 problems.append(
                     f"{label}.{name} must be a positive integer (got {v!r})")
+            elif float(v) > MAX_DIM:
+                problems.append(
+                    f"{label}.{name} is out of the supported range (must be "
+                    f"<= {MAX_DIM}; use a larger unit): got {v!r}")
         w = getattr(b, "weight", 0.0)
         if not _is_finite_nonneg(w):
             problems.append(

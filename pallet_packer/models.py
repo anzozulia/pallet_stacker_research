@@ -283,4 +283,12 @@ class PackerConfig:
     # half the smallest box's volume, so it never causes a box to be
     # dropped).
     realism_weight: float = 0.0
+    # Propagate each box's weight transitively down the whole support chain
+    # when accumulating loads against max_load_on_top (the v2 engine's
+    # _propagate_load model: check-direct / commit-transitive). Default OFF
+    # keeps the historical direct-supporter-only accumulation in the BRKGA
+    # decoders — a tall stack of individually-legal links could load the
+    # bottom box far past its rated limit (hardening round 2, F19). The API
+    # service turns this on.
+    transitive_load_bearing: bool = False
 
