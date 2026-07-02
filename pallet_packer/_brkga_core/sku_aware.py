@@ -91,6 +91,7 @@ def brkga_sku_aware_search(
     p_elite_inherit: float = 0.70,
     seed: int = 42,
     max_pallets: int = 1,
+    realism=None,   # RealismContext — keeps this ranker on the driver's scale
     verbose: bool = False,
 ) -> Tuple[Optional[PackResult], Optional[np.ndarray], int]:
     """Mini-BRKGA over 2S+1 SKU-aware chromosomes.
@@ -168,7 +169,7 @@ def brkga_sku_aware_search(
                 n_rots_arr, dims_all, mode=4,
                 max_pallets=max_pallets, sku_id_per_box=sku_id_per_box,
             )
-            fits[i] = _fitness_pallet1(res, pallet)
+            fits[i] = _fitness_pallet1(res, pallet, realism=realism)
             total_decodes += 1
             if fits[i] < best_fit - 1e-9:
                 best_fit = float(fits[i])

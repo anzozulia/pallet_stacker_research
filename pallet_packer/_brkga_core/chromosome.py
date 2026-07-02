@@ -55,8 +55,16 @@ def make_informed_chromosomes(
     decoder_mode: Optional[int] = None,
     n_modes: int = 5,
     seed: int = 42,
+    weights: Optional[np.ndarray] = None,
+    include_weight_order: bool = False,
 ) -> List[np.ndarray]:
-    """Generate informed initial chromosomes covering different orderings."""
+    """Generate informed initial chromosomes covering different orderings.
+
+    include_weight_order adds a heavy-first (weight_desc) ordering — the
+    heavy_on_bottom seed for the v3.5 path. It is FLAG-GATED because adding
+    an entry changes the smart-list length and therefore pop[0] seeding for
+    every caller; default-config runs (BR benchmarks) must stay bit-identical.
+    """
     n = len(boxes)
     rng = np.random.default_rng(seed)
     out: List[np.ndarray] = []
@@ -81,6 +89,11 @@ def make_informed_chromosomes(
     # NEW: SKU-grouped with rotation-aligned-depth (for layer-build mode)
     # Same as sku_grouped but with rotation chosen to align min-dim with X axis
     orderings['sku_grouped_alt'] = sku_grouped[::-1]  # reverse for variety
+    if include_weight_order and weights is not None:
+        w = np.asarray(weights, dtype=np.float64)
+        if w.max() > w.min():
+            # Stable so equal-weight boxes keep input order (deterministic).
+            orderings['weight_desc'] = np.argsort(-w, kind='stable').tolist()
 
     for name, order in orderings.items():
         if decoder_mode is None:

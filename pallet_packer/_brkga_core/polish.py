@@ -53,6 +53,11 @@ def local_search_2opt(
     max_pallets: int = 1,
     seed: int = 99,
     verbose: bool = False,
+    # RealismContext (or None). MUST match the driver's incumbent fitness:
+    # the accept comparisons here and the driver's best_fitness live on the
+    # same scalar scale, so leaving this out would make local search climb
+    # a different objective than the one it is compared against.
+    realism=None,
 ) -> Tuple[PackResult, np.ndarray, int]:
     """Position-based local search on the BPS order.
 
@@ -105,7 +110,7 @@ def local_search_2opt(
             max_overhang=max_overhang)
     res = decoder(current, boxes, pallet, config, n_rots_arr, dims_all,
                   max_pallets=max_pallets)
-    best_fit = _fitness_pallet1(res, pallet)
+    best_fit = _fitness_pallet1(res, pallet, realism=realism)
     rng = np.random.default_rng(seed)
     t0 = time.time()
     moves = 0
@@ -258,7 +263,7 @@ def local_search_2opt(
                 continue
         cand_res = decoder(candidate, boxes, pallet, config,
                            n_rots_arr, dims_all, max_pallets=max_pallets)
-        cand_fit = _fitness_pallet1(cand_res, pallet)
+        cand_fit = _fitness_pallet1(cand_res, pallet, realism=realism)
         moves += 1
         if cand_fit < best_fit - 1e-9:
             best_fit = cand_fit
@@ -304,6 +309,7 @@ def path_relinking(
     max_pallets: int = 1,
     max_evals: int = 100,
     verbose: bool = False,
+    realism=None,   # see local_search_2opt — must match the driver's scale
 ) -> Tuple[PackResult, np.ndarray, float]:
     """Path relinking: walk from chrom_a to chrom_b by progressively copying
     chrom_b's keys into chrom_a, evaluating each intermediate.
@@ -346,7 +352,7 @@ def path_relinking(
     n = len(boxes)
     res_a = decoder(chrom_a, boxes, pallet, config, n_rots_arr, dims_all,
                     max_pallets=max_pallets)
-    fit_a = _fitness_pallet1(res_a, pallet)
+    fit_a = _fitness_pallet1(res_a, pallet, realism=realism)
     # Identify positions where the two chromosomes differ significantly
     diffs = np.where(np.abs(chrom_a - chrom_b) > 1e-6)[0]
     if len(diffs) == 0:
@@ -366,7 +372,7 @@ def path_relinking(
             current[diffs[i]] = chrom_b[diffs[i]]
         cand_res = decoder(current, boxes, pallet, config, n_rots_arr, dims_all,
                             max_pallets=max_pallets)
-        cand_fit = _fitness_pallet1(cand_res, pallet)
+        cand_fit = _fitness_pallet1(cand_res, pallet, realism=realism)
         if cand_fit < best_fit - 1e-9:
             best_fit = cand_fit
             best = current.copy()
@@ -407,6 +413,7 @@ def lns_polish(
     time_budget_s: float = 3.0,
     seed: int = 77,
     verbose: bool = False,
+    realism=None,   # see local_search_2opt — must match the driver's scale
 ) -> Tuple[PackResult, np.ndarray, int]:
     """Large Neighborhood Search: destroy K box BPS keys, repair via decoder.
 
@@ -458,7 +465,7 @@ def lns_polish(
     current = best_chrom.copy()
     res = decoder(current, boxes, pallet, config, n_rots_arr, dims_all,
                   max_pallets=max_pallets)
-    best_fit = _fitness_pallet1(res, pallet)
+    best_fit = _fitness_pallet1(res, pallet, realism=realism)
     best_res = res
     rng = np.random.default_rng(seed)
     t0 = time.time()
@@ -473,7 +480,7 @@ def lns_polish(
             cand[idx] = rng.random()
         cand_res = decoder(cand, boxes, pallet, config, n_rots_arr, dims_all,
                            max_pallets=max_pallets)
-        cand_fit = _fitness_pallet1(cand_res, pallet)
+        cand_fit = _fitness_pallet1(cand_res, pallet, realism=realism)
         iters += 1
         if cand_fit < best_fit - 1e-9:
             best_fit = cand_fit

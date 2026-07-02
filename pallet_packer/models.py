@@ -266,3 +266,19 @@ class PackerConfig:
     # OPTIMAL in 12s; 4 workers don't converge in 30s.
     mip_num_workers: int = 1
 
+    # ---- Realism layer (opt-in; the API service turns these on) -----------
+    # All three default OFF so library/benchmark callers keep bit-identical
+    # behavior. See postprocess.py and docs/reports/34_realism_layer.md.
+    # Rigid per-pallet x/y translation of the finished layout so the load is
+    # centred on the deck (weighted CoG when weights exist, else bbox midpoint).
+    recenter_layout: bool = False
+    # Post-pass that re-rotates same-SKU boxes to the dominant orientation of
+    # their (SKU, z-level) when the swap is feasibility-preserving.
+    align_orientations: bool = False
+    # Weight of the epsilon-scaled secondary "realism" fitness term
+    # (heavy-low height moment + max-height + orientation consistency).
+    # 0.0 = off (fitness is pure volume, the historical objective). The term
+    # is bounded-loss: it can never cost more than half the smallest box's
+    # volume, so it never causes a box to be dropped.
+    realism_weight: float = 0.0
+

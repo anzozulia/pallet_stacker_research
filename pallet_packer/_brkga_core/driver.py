@@ -56,9 +56,30 @@ from .adaptive import (
     mode_weights_to_cdf,
 )
 from .sku_aware import brkga_sku_aware_search
+from .realism import build_realism_context
+from ..postprocess import apply_postprocess
 
 
 def brkga_pack_v35(
+    boxes: List[Box],
+    pallet: Pallet,
+    config: PackerConfig,
+    **kwargs,
+) -> PackResult:
+    """Public v3.5 entry point: the hybrid BRKGA solve plus the optional
+    realism post-passes (config.align_orientations / config.recenter_layout),
+    applied exactly once on the finished result. The internal restart and
+    group recursions call _brkga_pack_v35_impl directly, so a nested solve is
+    never postprocessed twice. See _brkga_pack_v35_impl for the full
+    parameter list (this wrapper forwards everything verbatim)."""
+    result = _brkga_pack_v35_impl(boxes, pallet, config, **kwargs)
+    if config.align_orientations or config.recenter_layout:
+        apply_postprocess(result, pallet, config,
+                          verbose=bool(kwargs.get("verbose", False)))
+    return result
+
+
+def _brkga_pack_v35_impl(
     boxes: List[Box],
     pallet: Pallet,
     config: PackerConfig,
@@ -158,8 +179,13 @@ def brkga_pack_v35(
         best_result: Optional[PackResult] = None
         best_util = -1.0
         cap = pallet.length * pallet.width * pallet.height
+        # Realism-aware restart selection (None keeps the historical raw-util
+        # comparison verbatim — its first-wins tie semantics differ from a
+        # fitness rewrite, so it must not change when the flag is off).
+        restart_ctx = build_realism_context(boxes, pallet, config)
+        best_restart_fit = float('inf')
         for r_idx in range(n_restarts):
-            res = brkga_pack_v35(
+            res = _brkga_pack_v35_impl(
                 boxes, pallet, config,
                 time_limit_s=time_per, max_pallets=max_pallets,
                 seed=seed + r_idx * 17,
@@ -191,7 +217,13 @@ def brkga_pack_v35(
             util = used / cap if cap > 0 else 0.0
             if verbose:
                 print(f"  [v3.5 multi-restart] run {r_idx+1}/{n_restarts}: util={util*100:.2f}%")
-            if util > best_util:
+            if restart_ctx is not None:
+                fit = _fitness_pallet1(res, pallet, realism=restart_ctx)
+                if fit < best_restart_fit - 1e-9:
+                    best_restart_fit = fit
+                    best_util = util
+                    best_result = res
+            elif util > best_util:
                 best_util = util
                 best_result = res
         return best_result if best_result is not None else PackResult(
@@ -212,6 +244,13 @@ def brkga_pack_v35(
         boxes, sku_id_per_box, n_rots_arr, dims_all, L, W, H, k_top=8)
     weights_arr, mlot_arr, rfs_arr, pallet_max_weight, has_constraints = \
         precompute_constraint_arrays(boxes, pallet)
+    # Secondary realism fitness (None unless config.realism_weight > 0).
+    # Threaded into EVERY fitness evaluation — batch, polish, sku-aware, and
+    # the v2-hybrid comparison — so the whole search optimizes one scalar.
+    realism_ctx = build_realism_context(
+        boxes, pallet, config, dims_all=dims_all,
+        sku_id_per_box=sku_id_per_box, weights_arr=weights_arr,
+        n_rots_arr=n_rots_arr)
     # Physical stability (support_ratio / centroid), the CoG envelope, and
     # pallet overhang are requirements of the CONFIG + PALLET, not of the
     # cargo's weights — a weightless box can still float. Previously all of
@@ -342,6 +381,13 @@ def brkga_pack_v35(
     rngs = [np.random.default_rng(seed + i) for i in range(K)]
     pops = [rngs[i].random((pop_size, chrom_size)) for i in range(K)]
 
+    # Heavy-first seed gate: only when the realism term is live (so the
+    # search can PREFER heavy-low layouts), heavy_on_bottom is on, and the
+    # load actually has weight variation. Gated so default-config callers
+    # (BR benchmarks) keep an unchanged smart-list.
+    include_weight_order = (bool(config.heavy_on_bottom)
+                            and realism_ctx is not None
+                            and float(weights_arr.max()) > float(weights_arr.min()))
     if use_smart_init or use_v2_seed:
         # Inject informed chromosomes into the front of pop 0
         smart = []
@@ -350,10 +396,14 @@ def brkga_pack_v35(
                 for m in range(n_modes):
                     smart.extend(make_informed_chromosomes(
                         boxes, n_rots_arr, decoder_mode=m,
-                        n_modes=n_modes, seed=seed + 100 + m))
+                        n_modes=n_modes, seed=seed + 100 + m,
+                        weights=weights_arr,
+                        include_weight_order=include_weight_order))
             else:
                 smart.extend(make_informed_chromosomes(
-                    boxes, n_rots_arr, decoder_mode=None, seed=seed + 100))
+                    boxes, n_rots_arr, decoder_mode=None, seed=seed + 100,
+                    weights=weights_arr,
+                    include_weight_order=include_weight_order))
         if v2_seed_chrom is not None:
             smart.insert(0, v2_seed_chrom)
         if v2_seed_chroms_per_mode:
@@ -383,6 +433,7 @@ def brkga_pack_v35(
             boxes, pallet, config, n_rots_arr, dims_all, sku_id_per_box,
             time_budget_s=sku_aware_budget_s,
             seed=seed + 11, max_pallets=max_pallets, verbose=verbose,
+            realism=realism_ctx,
         )
         sku_aware_time = time.time() - t_sku
         if verbose and sku_aware_result is not None:
@@ -439,7 +490,8 @@ def brkga_pack_v35(
     best_chrom: Optional[np.ndarray] = None
     # If SKU-aware found a result, seed best with it
     if sku_aware_result is not None and sku_aware_chrom is not None:
-        sku_fit = _fitness_pallet1(sku_aware_result, pallet)
+        sku_fit = _fitness_pallet1(sku_aware_result, pallet,
+                                   realism=realism_ctx)
         best_fitness = float(sku_fit)
         best_result = sku_aware_result
         best_chrom = sku_aware_chrom
@@ -489,6 +541,7 @@ def brkga_pack_v35(
                 cog_min_load_frac=cog_min_load_frac_value,
                 cog_active=cog_active_value,
                 max_overhang=max_overhang_value,
+                realism=realism_ctx,
             )
             fits[:] = batch_fits
             total_decodes += pop_size
@@ -574,6 +627,7 @@ def brkga_pack_v35(
             cog_active=cog_active_value,
             max_overhang=max_overhang_value,
             max_pallets=max_pallets, max_evals=50, verbose=verbose,
+            realism=realism_ctx,
         )
         if pr_fit < best_fitness - 1e-9:
             best_fitness = pr_fit
@@ -607,8 +661,9 @@ def brkga_pack_v35(
             max_overhang=max_overhang_value,
             max_pallets=max_pallets,
             seed=seed + 999, verbose=verbose,
+            realism=realism_ctx,
         )
-        ls_fit = _fitness_pallet1(ls_res, pallet)
+        ls_fit = _fitness_pallet1(ls_res, pallet, realism=realism_ctx)
         if ls_fit < best_fitness - 1e-9:
             best_fitness = ls_fit
             best_result = ls_res
@@ -641,8 +696,9 @@ def brkga_pack_v35(
             max_pallets=max_pallets,
             time_budget_s=lns_budget_s,
             seed=seed + 1234, verbose=verbose,
+            realism=realism_ctx,
         )
-        lns_fit = _fitness_pallet1(lns_res, pallet)
+        lns_fit = _fitness_pallet1(lns_res, pallet, realism=realism_ctx)
         if lns_fit < best_fitness - 1e-9:
             best_fitness = lns_fit
             best_result = lns_res
@@ -654,7 +710,7 @@ def brkga_pack_v35(
     # Phase 4: Compare with v2 hybrid (if enabled)
     # ----------------------------------------------------------------------
     if use_v2_hybrid_polish and v2_result is not None and v2_result.pallets:
-        v2_fit = _fitness_pallet1(v2_result, pallet)
+        v2_fit = _fitness_pallet1(v2_result, pallet, realism=realism_ctx)
         if v2_fit < best_fitness - 1e-9:
             if verbose:
                 print(f"  [v3.5] v2 hybrid wins: util={(1-v2_fit)*100:.2f}%")
@@ -788,7 +844,7 @@ def _pack_with_groups(
     out_pallets: List[PalletState] = []
     out_unpacked: List[Box] = []
     for idx, a in enumerate(non_empty):
-        res = brkga_pack_v35(
+        res = _brkga_pack_v35_impl(
             a["boxes"], pallet, config,
             time_limit_s=per_time, max_pallets=1, seed=seed + idx * 31,
             population_size=population_size, n_populations=n_populations,

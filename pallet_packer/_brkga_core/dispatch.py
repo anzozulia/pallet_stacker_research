@@ -458,10 +458,13 @@ def _compute_fitness_pallet1_batch(
     orders: np.ndarray,                # (pop_size, n)
     dims_all: np.ndarray,              # (n_boxes, n_rots_max, 3)
     pallet: Pallet,
+    realism=None,
 ) -> np.ndarray:
     """Vectorised _fitness_pallet1 over a batch of decode results.
 
-    fits[i] = 1 - vol_on_pallet0 / pallet_capacity  (lower is better).
+    fits[i] = 1 - vol_on_pallet0 / pallet_capacity  (lower is better),
+    plus the epsilon-scaled realism term when a RealismContext is given
+    (realism=None keeps the historical value bit-identical).
     """
     cap = float(pallet.length * pallet.width * pallet.height)
     if cap <= 0.0:
@@ -474,7 +477,12 @@ def _compute_fitness_pallet1_batch(
     selected_dims = dims_all[orders, rot_idx]
     vols = selected_dims[:, :, 0] * selected_dims[:, :, 1] * selected_dims[:, :, 2]
     used = (vols * mask).sum(axis=1).astype(np.float64)
-    return 1.0 - used / cap
+    fits = 1.0 - used / cap
+    if realism is not None:
+        from .realism import realism_batch
+        fits = fits + realism.eps * realism_batch(
+            placements_out_all, orders, realism)
+    return fits
 
 
 def decode_population_fitness(
@@ -504,6 +512,7 @@ def decode_population_fitness(
     cog_min_load_frac: float = 0.0,
     cog_active: int = 0,
     max_overhang: float = 0.0,
+    realism=None,
 ) -> np.ndarray:
     """Compute the BRKGA fitness array for an entire population in parallel.
 
@@ -512,7 +521,9 @@ def decode_population_fitness(
     Math is bit-identical to:
         for i in range(pop_size):
             res = decode_chromosome(population[i], ...)
-            fits[i] = _fitness_pallet1(res, pallet)
+            fits[i] = _fitness_pallet1(res, pallet, realism=realism)
+    (up to summation-order float noise well under the 1e-9 acceptance band
+    when realism is active; exactly identical when realism=None).
     """
     pop_size = population.shape[0]
     n = len(boxes)
@@ -583,7 +594,7 @@ def decode_population_fitness(
         n_bins_out_all[idx] = nb_m
 
     return _compute_fitness_pallet1_batch(
-        placements_out_all, orders, dims_all, pallet)
+        placements_out_all, orders, dims_all, pallet, realism=realism)
 
 
 def _decode_mode_batch(

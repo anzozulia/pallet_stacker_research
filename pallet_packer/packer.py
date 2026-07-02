@@ -423,6 +423,28 @@ class PackResult:
         return used / cap if cap > 0 else 0.0
 
 
+def regen_top_load(st: "PalletState") -> dict:
+    """Rebuild the per-placement top-load cache from current geometry.
+
+    Used after a removal (PalletPacker) and after postprocess.py's
+    orientation swaps — any edit that changes contact areas.
+    """
+    st._top_load = {id(p): 0.0 for p in st.placements}
+    # For every placement, distribute its weight onto its supporters using
+    # the same model as _commit. Iterate placements in bottom-up z order so
+    # supporters are processed before supportees.
+    for p in sorted(st.placements, key=lambda pl: pl.z):
+        sups = st._supporters_of(p)
+        total_area = sum(a for _, a in sups)
+        if total_area <= 0:
+            continue
+        for s, a in sups:
+            share = p.box.weight * (a / total_area)
+            st._top_load[id(s)] = st._top_load.get(id(s), 0.0) + share
+            st._propagate_load(s, share, set())
+    return st._top_load
+
+
 class PalletPacker:
     """Top-level packer: multi-start search over box orderings."""
 
@@ -789,6 +811,30 @@ class PalletPacker:
                 return self._brkga_search(items)
             return self._multi_start(items)
 
+        # Realism tie-break key (D14, gated on realism_weight > 0 — the
+        # tuple is unchanged when the flag is off). The candidate set often
+        # holds several packings that TIE on (unpacked, pallets, util) —
+        # e.g. every candidate that packs all boxes — and the historical
+        # first-wins tie left the pick to candidate-generation order, which
+        # is how heavy-on-top winners survived. The 4th key prefers the
+        # heavy-low / flat / orientation-consistent candidate among ties.
+        _realism_ctx = None
+        if float(getattr(self.config, "realism_weight", 0.0) or 0.0) > 0.0:
+            try:
+                from ._brkga_core.realism import (
+                    build_realism_context, realism_scalar)
+                _realism_ctx = build_realism_context(
+                    boxes, self.pallet, self.config)
+            except Exception:                      # noqa: BLE001 — never fail a solve
+                _realism_ctx = None
+
+        def _realism_key(res: PackResult) -> float:
+            if _realism_ctx is None or not res.pallets:
+                return 0.0
+            vals = [realism_scalar(PackResult(pallets=[st], unpacked=[]),
+                                   _realism_ctx) for st in res.pallets]
+            return sum(vals) / len(vals)
+
         def quality(res: PackResult) -> Tuple:
             # Two ranking modes:
             #   "min_unpacked": Unpacked items are the worst outcome.
@@ -801,10 +847,14 @@ class PalletPacker:
             if self.config.optimize == "max_util":
                 # Higher util wins; unpacked count and pallet count are
                 # tiebreakers.
-                return (-res.total_volume_utilisation,
-                        len(res.unpacked), res.num_pallets)
-            return (len(res.unpacked), res.num_pallets,
-                    -res.total_volume_utilisation)
+                base: Tuple = (-res.total_volume_utilisation,
+                               len(res.unpacked), res.num_pallets)
+            else:
+                base = (len(res.unpacked), res.num_pallets,
+                        -res.total_volume_utilisation)
+            if _realism_ctx is not None:
+                return base + (_realism_key(res),)
+            return base
 
         candidates: List[PackResult] = []
         # Baseline search for each box variant (original + optionally locked).
@@ -2051,20 +2101,7 @@ class PalletPacker:
 
     def _regen_top_load(self, st: "PalletState") -> dict:
         """Rebuild the per-placement top-load cache after a removal."""
-        st._top_load = {id(p): 0.0 for p in st.placements}
-        # For every placement, distribute its weight onto its supporters
-        # using the same model as _commit. Iterate placements in
-        # bottom-up z order so supporters are processed before supportees.
-        for p in sorted(st.placements, key=lambda pl: pl.z):
-            sups = st._supporters_of(p)
-            total_area = sum(a for _, a in sups)
-            if total_area <= 0:
-                continue
-            for s, a in sups:
-                share = p.box.weight * (a / total_area)
-                st._top_load[id(s)] = st._top_load.get(id(s), 0.0) + share
-                st._propagate_load(s, share, set())
-        return st._top_load
+        return regen_top_load(st)
 
     # -------- multi-start search (v1) -------------------------------------
     def _multi_start(self, boxes: List[Box]) -> PackResult:

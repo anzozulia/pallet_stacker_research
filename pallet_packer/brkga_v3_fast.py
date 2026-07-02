@@ -388,13 +388,23 @@ def decode_chromosome_fast(
     return PackResult(pallets=pallets_state, unpacked=unpacked)
 
 
-def _fitness_pallet1(result: PackResult, pallet: Pallet) -> float:
-    """Lower = better. For max_pallets=1: minimize 1 - util_pallet1."""
+def _fitness_pallet1(result: PackResult, pallet: Pallet,
+                     realism=None) -> float:
+    """Lower = better. For max_pallets=1: minimize 1 - util_pallet1.
+
+    With a RealismContext (see _brkga_core.realism) the epsilon-scaled
+    secondary term is added: base + eps * R. realism=None keeps the
+    historical value bit-identical."""
     cap = pallet.length * pallet.width * pallet.height
     if not result.pallets:
-        return 1.0
-    used = sum(p.box.volume for p in result.pallets[0].placements)
-    return 1.0 - (used / cap if cap > 0 else 0.0)
+        base = 1.0
+    else:
+        used = sum(p.box.volume for p in result.pallets[0].placements)
+        base = 1.0 - (used / cap if cap > 0 else 0.0)
+    if realism is None:
+        return base
+    from ._brkga_core.realism import realism_scalar
+    return base + realism.eps * realism_scalar(result, realism)
 
 
 def brkga_pack_fast(
