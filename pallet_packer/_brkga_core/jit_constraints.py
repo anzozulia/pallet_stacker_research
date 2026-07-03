@@ -35,13 +35,21 @@ def _check_load_on_top_njit(
     cand_dx: int, cand_dy: int, cand_dz: int,
     cand_weight: float,
     support_ratio: float,
-    require_centroid: int = 0,
-    require_full_support: int = 0,
-    pallet_l: int = 0,
-    pallet_w: int = 0,
+    require_centroid: int,
+    require_full_support: int,
+    pallet_l: int,
+    pallet_w: int,
+    pending_loads: np.ndarray,
 ) -> bool:
     """Returns True if placing candidate would not violate any supporter's
     max_load_on_top AND the placement's support is geometrically valid.
+
+    pending_loads (round 3, F20): per-row load contributions ACCEPTED but
+    not yet committed — the block decoder's sibling-column overlay. All
+    other callers pass an all-zero array (same behavior as before). The
+    load compare reads placement_top_loads[i] + pending_loads[i], so a
+    block's columns are checked against the running aggregate instead of
+    the stale pre-block state.
 
     Geometric checks (when cand_z > 0):
       - Total contact area / footprint >= effective_support_ratio
@@ -146,7 +154,14 @@ def _check_load_on_top_njit(
             continue
         area = float((x_hi - x_lo) * (y_hi - y_lo))
         share = cand_weight * (area / total_area)
-        if placement_top_loads[i] + share > mlot[sup_box] + 1e-6:
+        # Scale-aware tolerance (round 3, F25): the old absolute 1e-6 is
+        # below one double ulp for limits >= ~4.5e9 (contract allows 1e12),
+        # making accept/reject flip on accumulation-order noise.
+        lim = mlot[sup_box]
+        eps = 1e-9 * lim
+        if eps < 1e-6:
+            eps = 1e-6
+        if placement_top_loads[i] + pending_loads[i] + share > lim + eps:
             return False
     return True
 
@@ -292,10 +307,13 @@ def _check_load_transitive_njit(
     cand_weight: float,
     tl_inc: np.ndarray,
     tl_touched: np.ndarray,
+    pending_loads: np.ndarray,
 ) -> bool:
     """Transitive load CHECK (PackerConfig.transitive_load_bearing): a
     dry-run of _apply_load_contribution_transitive_njit that rejects if any
     box in the downward chain would exceed its max_load_on_top.
+    pending_loads: the block sibling-column overlay (F20) — all-zero from
+    every non-block caller; see _check_load_on_top_njit.
 
     Needed because the check-direct / commit-transitive split (v2's model)
     never rejects a FRESH pure column: each new box's direct supporter
@@ -383,8 +401,12 @@ def _check_load_transitive_njit(
         tl_touched[n_done] = best_row
         n_done += 1
         inc = tl_inc[best_row]
-        if ok and (placement_top_loads[best_row] + inc
-                   > mlot[bps_order[best_row]] + 1e-6):
+        lim = mlot[bps_order[best_row]]
+        eps = 1e-9 * lim         # scale-aware tolerance (round 3, F25)
+        if eps < 1e-6:
+            eps = 1e-6
+        if ok and (placement_top_loads[best_row] + pending_loads[best_row]
+                   + inc > lim + eps):
             ok = False        # keep walking only to zero the scratch
         tl_inc[best_row] = 0.0
         if not ok:
@@ -646,3 +668,96 @@ def _apply_load_contribution_transitive_njit(
                 tl_touched[n_touched] = i
                 n_touched += 1
             tl_inc[i] += w
+
+
+@njit(cache=True, fastmath=True)
+def _rider_inflow_njit(
+    placements_out: np.ndarray,
+    dims_all: np.ndarray,
+    bps_order: np.ndarray,
+    weights: np.ndarray,
+    placement_top_loads: np.ndarray,
+    n_placed: int,
+    cand_pallet: int,
+    cand_x: int, cand_y: int, cand_z: int,
+    cand_dx: int, cand_dy: int, cand_dz: int,
+    transitive: int,
+) -> float:
+    """Load the candidate would INHERIT by becoming a NEW supporter of
+    already-placed boxes (round 3, F21 "under-fill").
+
+    A box placed with its top plane exactly at an existing box's bottom,
+    overlapping it in XY, physically takes a contact-share of that rider's
+    outflow. The downward checks never see this, so the caller must (a)
+    reject when the inherited load exceeds the candidate's own
+    max_load_on_top, (b) under the transitive model flow
+    cand_weight + inherited downward instead of cand_weight, and (c) book
+    the inherited load onto the candidate's own row at commit.
+
+    Per rider R: T_old = R's existing supporter contact area, a = contact
+    with the candidate, share = out_R * a / (T_old + a) where out_R is R's
+    weight plus (transitive model only) the load already booked on R. Old
+    supporters are deliberately NOT debited — strictly conservative, no
+    negative propagation, no float dust. Zero-weight riders contribute
+    nothing (keeps weightless workloads bit-identical).
+    """
+    cand_top = cand_z + cand_dz
+    inherited = 0.0
+    for i in range(n_placed):
+        if placements_out[i, 5] == 0:
+            continue
+        if placements_out[i, 0] != cand_pallet:
+            continue
+        if placements_out[i, 4] != cand_top:
+            continue
+        r_box = bps_order[i]
+        r_rot = placements_out[i, 1]
+        r_dx = dims_all[r_box, r_rot, 0]
+        r_dy = dims_all[r_box, r_rot, 1]
+        r_x = placements_out[i, 2]
+        r_y = placements_out[i, 3]
+        x_lo = cand_x if cand_x > r_x else r_x
+        x_hi = cand_x + cand_dx if cand_x + cand_dx < r_x + r_dx else r_x + r_dx
+        if x_hi <= x_lo:
+            continue
+        y_lo = cand_y if cand_y > r_y else r_y
+        y_hi = cand_y + cand_dy if cand_y + cand_dy < r_y + r_dy else r_y + r_dy
+        if y_hi <= y_lo:
+            continue
+        a = float((x_hi - x_lo) * (y_hi - y_lo))
+        out_r = weights[r_box]
+        if transitive != 0:
+            out_r += placement_top_loads[i]
+        if out_r <= 0.0:
+            continue
+        # T_old: the rider's existing supporter contact (the candidate is
+        # not committed yet, so it is not in this scan).
+        t_old = 0.0
+        for j in range(n_placed):
+            if j == i:
+                continue
+            if placements_out[j, 5] == 0:
+                continue
+            if placements_out[j, 0] != cand_pallet:
+                continue
+            s_box = bps_order[j]
+            s_rot = placements_out[j, 1]
+            s_dz = dims_all[s_box, s_rot, 2]
+            s_z = placements_out[j, 4]
+            if s_z + s_dz != cand_top:
+                continue
+            s_dx = dims_all[s_box, s_rot, 0]
+            s_dy = dims_all[s_box, s_rot, 1]
+            s_x = placements_out[j, 2]
+            s_y = placements_out[j, 3]
+            sx_lo = r_x if r_x > s_x else s_x
+            sx_hi = r_x + r_dx if r_x + r_dx < s_x + s_dx else s_x + s_dx
+            if sx_hi <= sx_lo:
+                continue
+            sy_lo = r_y if r_y > s_y else s_y
+            sy_hi = r_y + r_dy if r_y + r_dy < s_y + s_dy else s_y + s_dy
+            if sy_hi <= sy_lo:
+                continue
+            t_old += float((sx_hi - sx_lo) * (sy_hi - sy_lo))
+        inherited += out_r * (a / (t_old + a))
+    return inherited

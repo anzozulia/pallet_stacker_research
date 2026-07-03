@@ -24,6 +24,18 @@ from typing import List, Optional, Tuple
 EPS = 1e-6
 
 
+def load_tol(limit: float) -> float:
+    """Scale-aware comparison tolerance for load/weight limits (round 3,
+    F25). The absolute EPS (1e-6) is below one double ulp for limits >=
+    ~4.5e9 while the contract allows weights up to 1e12 — an epsilon that
+    silently vanishes makes exactly-at-limit stacks flip on float
+    accumulation order. Identical to EPS for limits <= 1e3, so
+    small-scale behavior is unchanged. Mirrors the inline formula in the
+    JIT twins (jit_constraints)."""
+    rel = 1e-9 * limit
+    return rel if rel > EPS else EPS
+
+
 # ---------------------------------------------------------------------------
 # Rotations
 # ---------------------------------------------------------------------------

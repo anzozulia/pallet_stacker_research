@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from .models import EPS, Pallet, PackerConfig, Placement
+from .models import EPS, load_tol, Pallet, PackerConfig, Placement
 from .packer import PackResult
 
 
@@ -190,7 +190,8 @@ def validate(result: PackResult, pallet: Pallet,
                 for s, a in sups:
                     load_on[id(s)] += outflow * (a / sup_area)
             for q in placements:
-                if load_on[id(q)] > q.box.max_load_on_top + EPS:
+                if (load_on[id(q)] > q.box.max_load_on_top
+                        + load_tol(q.box.max_load_on_top)):
                     errors.append(
                         f"{st.pallet_id}: {q.box.id} carries "
                         f"{load_on[id(q)]:.2f} kg > max_load_on_top "

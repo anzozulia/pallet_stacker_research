@@ -32,6 +32,7 @@ from .jit_primitives_cy cimport (
 from .jit_constraints_cy cimport (
     _ck_load_on_top, _ck_load_transitive, _ck_cog_envelope,
     _ap_load_contribution, _ap_load_contribution_transitive,
+    _rider_inflow,
     _ap_cog_contribution,
 )
 from .jit_decoders_geom_cy cimport _find_best_block_at_pos
@@ -84,6 +85,8 @@ def decode_njit_mode_cstr(
     cdef double[::1] ptl = np.zeros(n, dtype=np.float64)
     cdef double[::1] tl_inc = np.zeros(n, dtype=np.float64)
     cdef i64[::1] tl_touched = np.zeros(n, dtype=np.int64)
+    # Round 3 (F20): all-zero overlay for the shared check signatures.
+    cdef double[::1] blk_inc = np.zeros(n, dtype=np.float64)
     cdef double[::1] psx = np.zeros(MAX_BINS, dtype=np.float64)
     cdef double[::1] psy = np.zeros(MAX_BINS, dtype=np.float64)
 
@@ -93,7 +96,7 @@ def decode_njit_mode_cstr(
         w_v, mlot_v, rfs_v, pmw, sr, rc,
         cxmn, cxmx, cymn, cymx, cmlf, cact,
         pal_w, ptl, psx, psy, n,
-        cpl, cpw, ctr, tl_inc, tl_touched,
+        cpl, cpw, ctr, tl_inc, tl_touched, blk_inc,
     )
 
 
@@ -126,6 +129,7 @@ cdef i64 _decode_cstr_012_loop(
     i64 pallet_l, i64 pallet_w, int transitive,
     double[::1] tl_inc,
     i64[::1] tl_touched,
+    double[::1] blk_inc,
 ) noexcept nogil:
     """All-nogil inner driver — cstr modes 0/1/2."""
     cdef i64 n_bins = 0
@@ -137,6 +141,7 @@ cdef i64 _decode_cstr_012_loop(
     cdef i64 best_rot_n, best_score_n, best_min_n, best_x_n, best_y_n, best_z_n
     cdef i64 new_count
     cdef double cand_weight
+    cdef double inherited, lim_c, eps_c
     cdef bint placed
     BIG = (W + H) * (W + H) + 1
 
@@ -214,15 +219,29 @@ cdef i64 _decode_cstr_012_loop(
                     b, bin_best_x, bin_best_y, bin_best_z,
                     dx, dy, dz, cand_weight, support_ratio,
                     require_centroid, <int>rfs[box_idx],
-                    pallet_l, pallet_w):
+                    pallet_l, pallet_w, blk_inc):
                 continue
+            # Under-fill check (round 3, F21) — mirrors the Numba twin.
+            inherited = _rider_inflow(
+                placements_out, dims_all, bps_order, weights,
+                placement_top_loads, n,
+                b, bin_best_x, bin_best_y, bin_best_z,
+                dx, dy, dz, transitive)
+            if inherited > 0.0:
+                lim_c = mlot[box_idx]
+                eps_c = 1e-9 * lim_c
+                if eps_c < 1e-6:
+                    eps_c = 1e-6
+                if inherited > lim_c + eps_c:
+                    continue
             # Transitive load check (F19): the direct check never rejects a
             # fresh column — dry-run the downward flow too.
             if transitive != 0 and not _ck_load_transitive(
                     placements_out, dims_all, bps_order, mlot,
                     placement_top_loads, n,
                     b, bin_best_x, bin_best_y, bin_best_z,
-                    dx, dy, dz, cand_weight, tl_inc, tl_touched):
+                    dx, dy, dz, cand_weight + inherited,
+                    tl_inc, tl_touched, blk_inc):
                 continue
 
             # CoG envelope (only when cog_active).
@@ -257,12 +276,16 @@ cdef i64 _decode_cstr_012_loop(
             placements_out[i, 4] = bin_best_z
             placements_out[i, 5] = 1
             pallet_weights[b] += cand_weight
+            # F21: book the inherited rider load on the candidate's row.
+            if inherited > 0.0:
+                placement_top_loads[i] += inherited
             if transitive != 0:
                 _ap_load_contribution_transitive(
                     placements_out, dims_all, bps_order,
                     placement_top_loads, n,
                     b, bin_best_x, bin_best_y, bin_best_z,
-                    dx, dy, dz, cand_weight, tl_inc, tl_touched)
+                    dx, dy, dz, cand_weight + inherited,
+                    tl_inc, tl_touched)
             else:
                 _ap_load_contribution(
                     placements_out, dims_all, bps_order,
@@ -355,7 +378,7 @@ cdef i64 _decode_cstr_012_loop(
                         n_bins, best_x_n, best_y_n, best_z_n,
                         dx, dy, dz, cand_weight, support_ratio,
                         require_centroid, <int>rfs[box_idx],
-                        pallet_l, pallet_w):
+                        pallet_l, pallet_w, blk_inc):
                     placements_out[i, 5] = 0
                     continue
             new_count = _commit_ems(
@@ -533,6 +556,8 @@ def decode_blocks_njit_mode_cstr(
     cdef double[::1] ptl = np.zeros(n, dtype=np.float64)
     cdef double[::1] tl_inc = np.zeros(n, dtype=np.float64)
     cdef i64[::1] tl_touched = np.zeros(n, dtype=np.int64)
+    # Round 3 (F20): the sibling-column overlay (see the Numba twin).
+    cdef double[::1] blk_inc = np.zeros(n, dtype=np.float64)
     cdef double[::1] psx = np.zeros(MAX_BINS, dtype=np.float64)
     cdef double[::1] psy = np.zeros(MAX_BINS, dtype=np.float64)
 
@@ -542,7 +567,7 @@ def decode_blocks_njit_mode_cstr(
         w_v, mlot_v, rfs_v, pmw, sr, rc,
         cxmn, cxmx, cymn, cymx, cmlf, cact,
         placed, sku_remaining, pal_w, ptl, psx, psy, n,
-        cpl, cpw, ctr, tl_inc, tl_touched,
+        cpl, cpw, ctr, tl_inc, tl_touched, blk_inc,
     )
 
 
@@ -577,6 +602,7 @@ cdef i64 _decode_cstr_blocks_loop(
     i64 pallet_l, i64 pallet_w, int transitive,
     double[::1] tl_inc,
     i64[::1] tl_touched,
+    double[::1] blk_inc,
 ) noexcept nogil:
     """All-nogil cstr mode 4 inner driver."""
     cdef i64 n_bins = 0
@@ -587,9 +613,10 @@ cdef i64 _decode_cstr_blocks_loop(
     cdef i64 best_rot_n, best_score_n, best_x_n, best_y_n, best_z_n
     cdef i64 k, l, m, new_count, placed_so_far
     cdef i64 kk, ll, mm, kk2, ll2, mm2, applied, applied2, blk_count
-    cdef i64 px, py, pz
+    cdef i64 px, py, pz, zz
     cdef double box_weight, box_mlot, cap_remain, bottom_w, block_total_w
-    cdef bint block_committed, bottom_ok
+    cdef double inherited_blk, lim_c, eps_c
+    cdef bint block_committed, bottom_ok, rider_free
     cdef i64 bx_kk, bx_ll, bx_px, bx_py
 
     # Count remaining boxes per SKU.
@@ -663,6 +690,38 @@ cdef i64 _decode_cstr_blocks_loop(
             # back to a single box at the DFTRC position. Each box rests on the
             # already-placed layer below (the block's own bottom boxes share
             # z=best_z and don't support each other), so per-box is exact.
+            # Phase 2c-pre (round 3, F21): riders on any column top force a
+            # 1x1x1 fallback with exact single-box semantics (mirrors the
+            # Numba twin).
+            rider_free = True
+            for bx_ll in range(l):
+                for bx_kk in range(k):
+                    if _rider_inflow(
+                            placements_out, dims_all, bps_order, weights,
+                            placement_top_loads, n,
+                            b, best_x + bx_kk * dx, best_y + bx_ll * dy,
+                            best_z, dx, dy, m * dz, transitive) > 0.0:
+                        rider_free = False
+                        break
+                if not rider_free:
+                    break
+            inherited_blk = 0.0
+            if not rider_free:
+                k = 1; l = 1; m = 1
+                inherited_blk = _rider_inflow(
+                    placements_out, dims_all, bps_order, weights,
+                    placement_top_loads, n,
+                    b, best_x, best_y, best_z, dx, dy, dz, transitive)
+                if inherited_blk > 0.0:
+                    lim_c = mlot[box_idx]
+                    eps_c = 1e-9 * lim_c
+                    if eps_c < 1e-6:
+                        eps_c = 1e-6
+                    if inherited_blk > lim_c + eps_c:
+                        continue
+            # Round 3 (F20): checks run against placement_top_loads PLUS
+            # the blk_inc overlay; each accepted column accumulates into
+            # the overlay before the next sibling is checked.
             bottom_ok = True
             for bx_ll in range(l):
                 for bx_kk in range(k):
@@ -674,38 +733,66 @@ cdef i64 _decode_cstr_blocks_loop(
                             b, bx_px, bx_py, best_z,
                             dx, dy, dz, box_weight, support_ratio,
                             require_centroid, <int>rfs[box_idx],
-                            pallet_l, pallet_w):
+                            pallet_l, pallet_w, blk_inc):
                         bottom_ok = False
                         break
                     # Transitive (F19): each bottom box relays its whole
-                    # column (m*w) to the external chain below.
+                    # column (m*w) to the external chain below (plus the
+                    # inherited rider load when shrunk to a single box).
                     if transitive != 0 and not _ck_load_transitive(
                             placements_out, dims_all, bps_order, mlot,
                             placement_top_loads, n,
                             b, bx_px, bx_py, best_z,
-                            dx, dy, dz, <double>m * box_weight,
-                            tl_inc, tl_touched):
+                            dx, dy, dz,
+                            <double>m * box_weight + inherited_blk,
+                            tl_inc, tl_touched, blk_inc):
                         bottom_ok = False
                         break
+                    # Accumulate the accepted column's contribution into
+                    # the overlay (writes blk_inc, not the real loads).
+                    if transitive != 0:
+                        _ap_load_contribution_transitive(
+                            placements_out, dims_all, bps_order,
+                            blk_inc, n,
+                            b, bx_px, bx_py, best_z, dx, dy, dz,
+                            <double>m * box_weight + inherited_blk,
+                            tl_inc, tl_touched)
+                    else:
+                        _ap_load_contribution(
+                            placements_out, dims_all, bps_order,
+                            blk_inc, n,
+                            b, bx_px, bx_py, best_z, dx, dy, dz,
+                            box_weight)
                 if not bottom_ok:
                     break
+            # Wipe the overlay (O(n); Phase 2c runs once per block attempt).
+            for zz in range(n):
+                blk_inc[zz] = 0.0
             if not bottom_ok:
                 # Shrink block to (1, 1, m) and retry; if still fails, skip.
                 k = 1; l = 1
+                if _rider_inflow(
+                        placements_out, dims_all, bps_order, weights,
+                        placement_top_loads, n,
+                        b, best_x, best_y, best_z,
+                        dx, dy, m * dz, transitive) > 0.0:
+                    # Only the exact single-box path (m == 1, above) may
+                    # carry inherited rider load — give up on this bin.
+                    continue
                 if not _ck_load_on_top(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, best_x, best_y, best_z,
                         dx, dy, dz, box_weight, support_ratio,
                         require_centroid, <int>rfs[box_idx],
-                        pallet_l, pallet_w):
+                        pallet_l, pallet_w, blk_inc):
                     continue
                 if transitive != 0 and not _ck_load_transitive(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, best_x, best_y, best_z,
                         dx, dy, dz, <double>m * box_weight,
-                        tl_inc, tl_touched):
+                        tl_inc, tl_touched, blk_inc):
                     continue
             # Phase 2d: CoG envelope (block as point mass at bottom centroid).
             if cog_active != 0:
@@ -726,6 +813,11 @@ cdef i64 _decode_cstr_blocks_loop(
                 dx, dy, dz, k, l, m, my_sku, box_weight)
             sku_remaining[my_sku] -= placed_so_far
             pallet_weights[b] += <double>placed_so_far * box_weight
+            # F21: book the inherited rider load on the committed box's own
+            # row (nonzero only for the shrunk 1x1x1 case → row i). Booked
+            # even at best_z == 0.
+            if inherited_blk > 0.0:
+                placement_top_loads[i] += inherited_blk
             # Apply load contribution from bottom layer to external supporters.
             if best_z > 0:
                 applied = 0
@@ -743,12 +835,14 @@ cdef i64 _decode_cstr_blocks_loop(
                     if transitive != 0:
                         # Bottom box carries its whole column (internal
                         # seeding is already transitive): the FULL column
-                        # weight flows to external supporters and on down.
+                        # weight flows to external supporters and on down,
+                        # plus any inherited rider load (F21; 1x1x1 only).
                         _ap_load_contribution_transitive(
                             placements_out, dims_all, bps_order,
                             placement_top_loads, n,
                             b, placements_out[jj, 2], placements_out[jj, 3],
-                            best_z, dx, dy, dz, <double>m * box_weight,
+                            best_z, dx, dy, dz,
+                            <double>m * box_weight + inherited_blk,
                             tl_inc, tl_touched)
                     else:
                         _ap_load_contribution(
@@ -875,7 +969,7 @@ cdef i64 _decode_cstr_blocks_loop(
                             best_y_n + bx_ll * dy, best_z_n,
                             dx, dy, dz, box_weight, support_ratio,
                             require_centroid, <int>rfs[box_idx],
-                            pallet_l, pallet_w):
+                            pallet_l, pallet_w, blk_inc):
                         bottom_ok = False
                         break
                 if not bottom_ok:
@@ -888,7 +982,7 @@ cdef i64 _decode_cstr_blocks_loop(
                         n_bins, best_x_n, best_y_n, best_z_n,
                         dx, dy, dz, box_weight, support_ratio,
                         require_centroid, <int>rfs[box_idx],
-                        pallet_l, pallet_w):
+                        pallet_l, pallet_w, blk_inc):
                     placements_out[i, 5] = 0
                     placed[i] = 1
                     sku_remaining[my_sku] -= 1
@@ -1005,6 +1099,8 @@ def decode_layer_njit_cstr(
     cdef double[::1] ptl = np.zeros(n, dtype=np.float64)
     cdef double[::1] tl_inc = np.zeros(n, dtype=np.float64)
     cdef i64[::1] tl_touched = np.zeros(n, dtype=np.int64)
+    # Round 3 (F20): all-zero overlay for the shared check signatures.
+    cdef double[::1] blk_inc = np.zeros(n, dtype=np.float64)
     cdef double[::1] psx = np.zeros(MAX_BINS, dtype=np.float64)
     cdef double[::1] psy = np.zeros(MAX_BINS, dtype=np.float64)
 
@@ -1014,7 +1110,7 @@ def decode_layer_njit_cstr(
         w_v, mlot_v, rfs_v, pmw, sr, rc,
         cxmn, cxmx, cymn, cymx, cmlf, cact,
         pal_w, ptl, psx, psy, n,
-        cpl, cpw, ctr, tl_inc, tl_touched,
+        cpl, cpw, ctr, tl_inc, tl_touched, blk_inc,
     )
 
 
@@ -1048,6 +1144,7 @@ cdef i64 _decode_cstr_layer_loop(
     i64 pallet_l, i64 pallet_w, int transitive,
     double[::1] tl_inc,
     i64[::1] tl_touched,
+    double[::1] blk_inc,
 ) noexcept nogil:
     """All-nogil cstr mode 3 inner driver."""
     cdef i64 n_bins = 0
@@ -1060,6 +1157,7 @@ cdef i64 _decode_cstr_layer_loop(
     cdef i64 seed_rot, seed_yz, seed_y, seed_z
     cdef i64 new_count
     cdef double cand_weight
+    cdef double inherited, lim_c, eps_c
     cdef bint placed
     cdef bint cog_ok
 
@@ -1109,19 +1207,33 @@ cdef i64 _decode_cstr_layer_loop(
                         pallet_max_weight,
                         cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                         cog_min_load_frac)
+                # F21 (round 3): under-fill inherited load — mirrors Numba.
+                inherited = _rider_inflow(
+                    placements_out, dims_all, bps_order, weights,
+                    placement_top_loads, n,
+                    b, bin_best_x, bin_best_y, bin_best_z,
+                    dx, dy, dz, transitive)
+                if cog_ok and inherited > 0.0:
+                    lim_c = mlot[box_idx]
+                    eps_c = 1e-9 * lim_c
+                    if eps_c < 1e-6:
+                        eps_c = 1e-6
+                    if inherited > lim_c + eps_c:
+                        cog_ok = False
                 if cog_ok and transitive != 0:
                     cog_ok = _ck_load_transitive(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, bin_best_x, bin_best_y, bin_best_z,
-                        dx, dy, dz, cand_weight, tl_inc, tl_touched)
+                        dx, dy, dz, cand_weight + inherited,
+                        tl_inc, tl_touched, blk_inc)
                 if cog_ok and _ck_load_on_top(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, bin_best_x, bin_best_y, bin_best_z,
                         dx, dy, dz, cand_weight, support_ratio,
                         require_centroid, <int>rfs[box_idx],
-                        pallet_l, pallet_w):
+                        pallet_l, pallet_w, blk_inc):
                     new_count = _commit_ems(
                         bin_emss[b], bin_ems_count[b],
                         bin_best_x, bin_best_y, bin_best_z,
@@ -1142,12 +1254,15 @@ cdef i64 _decode_cstr_layer_loop(
                     placements_out[i, 4] = bin_best_z
                     placements_out[i, 5] = 1
                     pallet_weights[b] += cand_weight
+                    if inherited > 0.0:          # F21: book on own row
+                        placement_top_loads[i] += inherited
                     if transitive != 0:
                         _ap_load_contribution_transitive(
                             placements_out, dims_all, bps_order,
                             placement_top_loads, n,
                             b, bin_best_x, bin_best_y, bin_best_z,
-                            dx, dy, dz, cand_weight, tl_inc, tl_touched)
+                            dx, dy, dz, cand_weight + inherited,
+                            tl_inc, tl_touched)
                     else:
                         _ap_load_contribution(
                             placements_out, dims_all, bps_order,
@@ -1201,19 +1316,33 @@ cdef i64 _decode_cstr_layer_loop(
                         pallet_max_weight,
                         cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                         cog_min_load_frac)
+                # F21 (round 3): under-fill inherited load; see Phase 1.
+                inherited = _rider_inflow(
+                    placements_out, dims_all, bps_order, weights,
+                    placement_top_loads, n,
+                    b, new_slab_start, new_best_y, new_best_z,
+                    dx, dy, dz, transitive)
+                if cog_ok and inherited > 0.0:
+                    lim_c = mlot[box_idx]
+                    eps_c = 1e-9 * lim_c
+                    if eps_c < 1e-6:
+                        eps_c = 1e-6
+                    if inherited > lim_c + eps_c:
+                        cog_ok = False
                 if cog_ok and transitive != 0:
                     cog_ok = _ck_load_transitive(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, new_slab_start, new_best_y, new_best_z,
-                        dx, dy, dz, cand_weight, tl_inc, tl_touched)
+                        dx, dy, dz, cand_weight + inherited,
+                        tl_inc, tl_touched, blk_inc)
                 if cog_ok and _ck_load_on_top(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, new_slab_start, new_best_y, new_best_z,
                         dx, dy, dz, cand_weight, support_ratio,
                         require_centroid, <int>rfs[box_idx],
-                        pallet_l, pallet_w):
+                        pallet_l, pallet_w, blk_inc):
                     new_count = _commit_ems(
                         bin_emss[b], bin_ems_count[b],
                         new_slab_start, new_best_y, new_best_z,
@@ -1236,12 +1365,15 @@ cdef i64 _decode_cstr_layer_loop(
                     pallet_weights[b] += cand_weight
                     bin_slab_min_x[b] = new_slab_start
                     bin_slab_max_x[b] = new_slab_start + dx
+                    if inherited > 0.0:          # F21: book on own row
+                        placement_top_loads[i] += inherited
                     if transitive != 0:
                         _ap_load_contribution_transitive(
                             placements_out, dims_all, bps_order,
                             placement_top_loads, n,
                             b, new_slab_start, new_best_y, new_best_z,
-                            dx, dy, dz, cand_weight, tl_inc, tl_touched)
+                            dx, dy, dz, cand_weight + inherited,
+                            tl_inc, tl_touched)
                     else:
                         _ap_load_contribution(
                             placements_out, dims_all, bps_order,
@@ -1303,7 +1435,7 @@ cdef i64 _decode_cstr_layer_loop(
                     n_bins, 0, seed_y, seed_z,
                     dx, dy, dz, cand_weight, support_ratio,
                     require_centroid, <int>rfs[box_idx],
-                    pallet_l, pallet_w):
+                    pallet_l, pallet_w, blk_inc):
                 placements_out[i, 5] = 0
                 continue
         new_count = _commit_ems(
@@ -1389,6 +1521,8 @@ def decode_batch_njit_mode_cstr(
     cdef double[:, ::1] ptl_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
     cdef double[:, ::1] ti_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
     cdef i64[:, ::1] tt_all = np.zeros((pop_size, n_boxes), dtype=np.int64)
+    # Round 3 (F20): per-chromosome sibling-column overlay planes.
+    cdef double[:, ::1] bi_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
     cdef double[:, ::1] psx_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
     cdef double[:, ::1] psy_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
 
@@ -1402,7 +1536,7 @@ def decode_batch_njit_mode_cstr(
                 w_v, mlot_v, rfs_v, pmw, sr, rc,
                 cxmn, cxmx, cymn, cymx, cmlf, cact,
                 palw_all[i], ptl_all[i], psx_all[i], psy_all[i], n_boxes,
-                cpl, cpw, ctr, ti_all[i], tt_all[i],
+                cpl, cpw, ctr, ti_all[i], tt_all[i], bi_all[i],
             )
     return n_bins_out
 
@@ -1456,6 +1590,8 @@ def decode_batch_blocks_njit_mode_cstr(
     cdef double[:, ::1] ptl_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
     cdef double[:, ::1] ti_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
     cdef i64[:, ::1] tt_all = np.zeros((pop_size, n_boxes), dtype=np.int64)
+    # Round 3 (F20): per-chromosome sibling-column overlay planes.
+    cdef double[:, ::1] bi_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
     cdef double[:, ::1] psx_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
     cdef double[:, ::1] psy_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
 
@@ -1470,7 +1606,7 @@ def decode_batch_blocks_njit_mode_cstr(
                 cxmn, cxmx, cymn, cymx, cmlf, cact,
                 placed_all[i], skur_all[i],
                 palw_all[i], ptl_all[i], psx_all[i], psy_all[i], n_boxes,
-                cpl, cpw, ctr, ti_all[i], tt_all[i],
+                cpl, cpw, ctr, ti_all[i], tt_all[i], bi_all[i],
             )
     return n_bins_out
 
@@ -1522,6 +1658,8 @@ def decode_batch_layer_njit_cstr(
     cdef double[:, ::1] ptl_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
     cdef double[:, ::1] ti_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
     cdef i64[:, ::1] tt_all = np.zeros((pop_size, n_boxes), dtype=np.int64)
+    # Round 3 (F20): per-chromosome sibling-column overlay planes.
+    cdef double[:, ::1] bi_all = np.zeros((pop_size, n_boxes), dtype=np.float64)
     cdef double[:, ::1] psx_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
     cdef double[:, ::1] psy_all = np.zeros((pop_size, MAX_BINS), dtype=np.float64)
 
@@ -1535,6 +1673,6 @@ def decode_batch_layer_njit_cstr(
                 w_v, mlot_v, rfs_v, pmw, sr, rc,
                 cxmn, cxmx, cymn, cymx, cmlf, cact,
                 palw_all[i], ptl_all[i], psx_all[i], psy_all[i], n_boxes,
-                cpl, cpw, ctr, ti_all[i], tt_all[i],
+                cpl, cpw, ctr, ti_all[i], tt_all[i], bi_all[i],
             )
     return n_bins_out

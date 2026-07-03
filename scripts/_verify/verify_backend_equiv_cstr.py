@@ -266,6 +266,13 @@ def main():
         "transitive_on": 0,
         "deck_rejections_seen": 0,
         "transitive_chain_seen": 0,
+        # Round-3 (F20/F21/F25) coverage — the fixes are unconditional, so
+        # "fired" means the deterministic case shows the POST-fix physical
+        # outcome (the pre-fix code provably violated it; a pre-fix run of
+        # this battery records the defect and FAILS the gate).
+        "block_joint_rejections_seen": 0,
+        "underfill_rejections_seen": 0,
+        "epsilon_scale_seen": 0,
         "z_gt0_seen": 0,      # instances where some box placed at z>0
         "rejections_seen": 0,  # instances where some box NOT placed (col5==0)
         "multibin": 0,         # instances using >1 bin
@@ -390,6 +397,10 @@ def main():
     print("=== Round-2 battery (deck contact + transitive load) ===")
     r2_fail = run_round2_battery(cov)
 
+    # ---- Round-3 battery (F20 block siblings / F21 under-fill / F25) ----
+    print("=== Round-3 battery (block aggregation + under-fill + eps) ===")
+    r3_fail = run_round3_battery(cov)
+
     # ---- Targeted edge-case battery (deterministic, no RNG) ----
     print("=== Edge-case battery (extreme guard values) ===")
     edge_fail = run_edge_cases()
@@ -415,6 +426,10 @@ def main():
     print(f"  ROUND-2 branch coverage: deck_rejections_seen="
           f"{cov['deck_rejections_seen']} transitive_chain_seen="
           f"{cov['transitive_chain_seen']}")
+    print(f"  ROUND-3 branch coverage: block_joint_rejections_seen="
+          f"{cov['block_joint_rejections_seen']} underfill_rejections_seen="
+          f"{cov['underfill_rejections_seen']} epsilon_scale_seen="
+          f"{cov['epsilon_scale_seen']}")
     print(f"  behaviour: z>0 placements seen={cov['z_gt0_seen']} "
           f"rejections(col5==0) seen={cov['rejections_seen']} "
           f"multibin seen={cov['multibin']}")
@@ -429,14 +444,23 @@ def main():
         print(f"  Worst mismatch: {worst[1]} with {worst[0]} differing rows @ {worst[2]}")
 
     overall_ok = (total_fail == 0) and (edge_fail == 0) and (eps_fail == 0) \
-        and (r2_fail == 0) \
-        and cov["deck_rejections_seen"] > 0 and cov["transitive_chain_seen"] > 0
+        and (r2_fail == 0) and (r3_fail == 0) \
+        and cov["deck_rejections_seen"] > 0 and cov["transitive_chain_seen"] > 0 \
+        and cov["block_joint_rejections_seen"] > 0 \
+        and cov["underfill_rejections_seen"] > 0 \
+        and cov["epsilon_scale_seen"] > 0
     grand = total_comp + 70 + eps_comp
     if cov["deck_rejections_seen"] == 0 or cov["transitive_chain_seen"] == 0:
         print("\n  !! ROUND-2 COVERAGE HOLE: a new branch never fired")
+    if (cov["block_joint_rejections_seen"] == 0
+            or cov["underfill_rejections_seen"] == 0
+            or cov["epsilon_scale_seen"] == 0):
+        print("\n  !! ROUND-3 COVERAGE HOLE: a fix's expected outcome never "
+              "observed (running against a pre-round-3 core?)")
     print(f"\n=== RESULT: {'PASS' if overall_ok else 'FAIL'} "
           f"({grand} total comparisons; "
-          f"{total_fail + edge_fail + eps_fail + r2_fail} total mismatches) ===")
+          f"{total_fail + edge_fail + eps_fail + r2_fail + r3_fail} "
+          f"total mismatches) ===")
     return 0 if overall_ok else 1
 
 
@@ -551,6 +575,165 @@ def run_round2_battery(cov):
     print(f"  round2 battery: {fails} mismatches; "
           f"deck branch fired in {cov['deck_rejections_seen']} case(s), "
           f"transitive branch fired in {cov['transitive_chain_seen']} case(s)")
+    return fails
+
+
+def run_round3_battery(cov):
+    """Deterministic F20/F21/F25 cases (hardening round 3).
+
+    The round-3 fixes are UNCONDITIONAL (physics bugs, no flag), so unlike
+    round 2 there is no flag-off run to diff against. Instead each case
+    encodes the physically-correct POST-fix outcome that the pre-fix code
+    provably violated (fuzz + live probes, docs/reports/37): the coverage
+    counters only fire when the fixed behavior is observed, and every case
+    still asserts cy == nb bit-identity. Returns the mismatch count.
+    """
+    fails = 0
+
+    def base_ca(n, weights, mlot, sr=0.8):
+        return {
+            "weights": np.asarray(weights, dtype=np.float64),
+            "mlot": np.asarray(mlot, dtype=np.float64),
+            "rfs": np.zeros(n, dtype=np.int64),
+            "pallet_max_weight": _NO_LIMIT,
+            "support_ratio": sr, "require_centroid": 0,
+            "cog_x_min": -_NO_LIMIT, "cog_x_max": _NO_LIMIT,
+            "cog_y_min": -_NO_LIMIT, "cog_y_max": _NO_LIMIT,
+            "cog_min_load_frac": 0.0, "cog_active": 0,
+        }
+
+    def single_rot(n, sizes):
+        n_rots = np.full(n, 1, dtype=np.int64)
+        dims = np.zeros((n, 6, 3), dtype=np.int64)
+        for i, s in enumerate(sizes):
+            dims[i, 0] = s
+        return n_rots, dims
+
+    # ---- F20: a 2x2x1 same-SKU block lands on a weak base. Each column's
+    # weight (10) individually fits mlot=25; the aggregate (40) does not.
+    # Pre-fix the block decoder checked all four columns against the
+    # pre-block state and committed all four (base carried 40). Post-fix
+    # at most 2 top boxes may rest on the base.
+    n = 5
+    n_rots, dims = single_rot(
+        n, [(100, 100, 20)] + [(50, 50, 20)] * 4)
+    order = np.arange(n, dtype=np.int64)
+    sku = np.array([0, 1, 1, 1, 1], dtype=np.int64)
+    ca = base_ca(n, [50.0] + [10.0] * 4, [25.0] + [_NO_LIMIT] * 4)
+    for tr in (0, 1):
+        po_c, nbc = run_cstr_blocks(cy, order, n_rots, dims, sku,
+                                    100, 100, 200, 1, 2, ca, 0, 0, tr)
+        po_n, nbn = run_cstr_blocks(nb, order, n_rots, dims, sku,
+                                    100, 100, 200, 1, 2, ca, 0, 0, tr)
+        if not (np.array_equal(po_c, po_n) and nbc == nbn):
+            fails += 1
+            print(f"  FAIL round3-block tr={tr}: cy != nb")
+        placed_tops = int((po_c[1:, 5] == 1).sum())
+        if po_c[0, 5] == 1 and placed_tops <= 2:
+            cov["block_joint_rejections_seen"] += 1
+        else:
+            print(f"  round3-block tr={tr}: base placed={po_c[0, 5]} "
+                  f"tops placed={placed_tops} (pre-fix behavior is 4)")
+
+    # ---- F20 (m>1): 2x2x2 block, transitive relay per column = 20 <= 25,
+    # aggregate 80. Post-fix at most 2 whole columns (4 boxes) can rest on
+    # the base under the transitive model (2 cols x 20 = 40 > 25 already,
+    # so really at most 1 column = 2 boxes).
+    n = 9
+    n_rots, dims = single_rot(
+        n, [(100, 100, 20)] + [(50, 50, 20)] * 8)
+    order = np.arange(n, dtype=np.int64)
+    sku = np.array([0] + [1] * 8, dtype=np.int64)
+    ca = base_ca(n, [50.0] + [10.0] * 8, [25.0] + [_NO_LIMIT] * 8)
+    po_c, nbc = run_cstr_blocks(cy, order, n_rots, dims, sku,
+                                100, 100, 200, 1, 2, ca, 0, 0, 1)
+    po_n, nbn = run_cstr_blocks(nb, order, n_rots, dims, sku,
+                                100, 100, 200, 1, 2, ca, 0, 0, 1)
+    if not (np.array_equal(po_c, po_n) and nbc == nbn):
+        fails += 1
+        print("  FAIL round3-block-m2: cy != nb")
+    placed_tops = int((po_c[1:, 5] == 1).sum())
+    if po_c[0, 5] == 1 and placed_tops <= 2:
+        cov["block_joint_rejections_seen"] += 1
+
+    # ---- F21: under-fill. Pillar at the origin, a half-supported slab
+    # cantilevers over the empty floor half (sr=0.5), then a FRAGILE box
+    # (mlot=0) targets the floor spot under the cantilever — its top plane
+    # meets the slab's bottom, so it would inherit half the slab's load.
+    # Pre-fix every decoder placed it there (validate flags it); post-fix
+    # that spot is rejected and the box lands elsewhere (or not at all).
+    n = 3
+    n_rots, dims = single_rot(
+        n, [(200, 200, 100), (400, 200, 100), (200, 200, 100)])
+    order = np.arange(n, dtype=np.int64)
+    ca = base_ca(n, [1.0, 1.0, 5.0], [_NO_LIMIT, _NO_LIMIT, 0.0], sr=0.5)
+    for tr in (0, 1):
+        fired_any = False
+        for mode in (0, 1, 2):
+            po_c, nbc = run_cstr_012(cy, order, n_rots, dims, 400, 200, 300,
+                                     1, mode, ca, 0, 0, tr)
+            po_n, nbn = run_cstr_012(nb, order, n_rots, dims, 400, 200, 300,
+                                     1, mode, ca, 0, 0, tr)
+            if not (np.array_equal(po_c, po_n) and nbc == nbn):
+                fails += 1
+                print(f"  FAIL round3-underfill cstr{mode} tr={tr}: cy != nb")
+            # Row 2 is the fragile box: post-fix it must NOT sit at z=0
+            # while the slab (row 1) is placed above z=0 next to it.
+            if po_c[1, 5] == 1 and po_c[1, 4] > 0:
+                if po_c[2, 5] == 0 or po_c[2, 4] > 0:
+                    fired_any = True
+        po_c, nbc = run_cstr_layer(cy, order, n_rots, dims, 400, 200, 300,
+                                   1, ca, 0, 0, tr)
+        po_n, nbn = run_cstr_layer(nb, order, n_rots, dims, 400, 200, 300,
+                                   1, ca, 0, 0, tr)
+        if not (np.array_equal(po_c, po_n) and nbc == nbn):
+            fails += 1
+            print(f"  FAIL round3-underfill layer tr={tr}: cy != nb")
+        sku3 = np.arange(n, dtype=np.int64)
+        po_c, nbc = run_cstr_blocks(cy, order, n_rots, dims, sku3, 400, 200,
+                                    300, 1, 3, ca, 0, 0, tr)
+        po_n, nbn = run_cstr_blocks(nb, order, n_rots, dims, sku3, 400, 200,
+                                    300, 1, 3, ca, 0, 0, tr)
+        if not (np.array_equal(po_c, po_n) and nbc == nbn):
+            fails += 1
+            print(f"  FAIL round3-underfill blocks tr={tr}: cy != nb")
+        if fired_any:
+            cov["underfill_rejections_seen"] += 1
+        else:
+            print(f"  round3-underfill tr={tr}: fragile box still at z=0 "
+                  f"under the cantilever (pre-fix behavior)")
+
+    # ---- F25: scale-aware epsilon at 1e12. The carrier's mlot is 1e12;
+    # a rider of 1e12+500 is within the relative tolerance
+    # (max(1e-6, 1e-9*mlot) = 1000) and must be ACCEPTED post-fix (the
+    # old absolute 1e-6 vanished below one ulp and rejected it); a rider
+    # of 1e12+5000 is beyond the tolerance and must stay rejected.
+    n = 2
+    n_rots, dims = single_rot(n, [(400, 400, 100), (400, 400, 100)])
+    order = np.arange(n, dtype=np.int64)
+    for extra, expect_placed in ((500.0, 2), (5000.0, 1)):
+        ca = base_ca(n, [1.0, 1e12 + extra], [1e12, _NO_LIMIT])
+        po_c, nbc = run_cstr_012(cy, order, n_rots, dims, 400, 400, 1000,
+                                 1, 0, ca, 0, 0, 0)
+        po_n, nbn = run_cstr_012(nb, order, n_rots, dims, 400, 400, 1000,
+                                 1, 0, ca, 0, 0, 0)
+        if not (np.array_equal(po_c, po_n) and nbc == nbn):
+            fails += 1
+            print(f"  FAIL round3-eps extra={extra}: cy != nb")
+        placed = int((po_c[:, 5] == 1).sum())
+        if placed == expect_placed:
+            if extra == 500.0:
+                cov["epsilon_scale_seen"] += 1
+        else:
+            print(f"  round3-eps extra={extra}: placed={placed}, "
+                  f"expected {expect_placed}")
+            if extra == 5000.0:
+                fails += 1     # over-tolerance accept would be a REAL bug
+
+    print(f"  round3 battery: {fails} mismatches; block fix observed in "
+          f"{cov['block_joint_rejections_seen']} case(s), under-fill fix in "
+          f"{cov['underfill_rejections_seen']} case(s), scaled epsilon in "
+          f"{cov['epsilon_scale_seen']} case(s)")
     return fails
 
 

@@ -69,6 +69,7 @@ cdef bint _ck_load_on_top(
     int require_full_support,
     i64 pallet_l,
     i64 pallet_w,
+    const double[::1] pending_loads,
 ) noexcept nogil:
     """Two-pass: total contact area → support_ratio + centroid; then per-
     supporter load distribution → max_load_on_top. Floor placements (z<=0)
@@ -76,9 +77,13 @@ cdef bint _ck_load_on_top(
     only when overhang inflates the container bounds): then the box must
     rest ON the deck — deck-contact area >= the effective support ratio
     (F17; mirrors the Numba reference).
+    pending_loads (round 3, F20): the block sibling-column overlay — all
+    zero from every non-block caller; the load compare reads
+    placement_top_loads[i] + pending_loads[i].
     """
     cdef i64 x_hi0, y_hi0
     cdef double contact, eff_sr0, footprint0
+    cdef double lim, eps
     if cand_z <= 0:
         if pallet_l <= 0:
             return True
@@ -165,7 +170,12 @@ cdef bint _ck_load_on_top(
             continue
         area = <double>((x_hi - x_lo) * (y_hi - y_lo))
         share = cand_weight * (area / total_area)
-        if placement_top_loads[i] + share > mlot[sup_box] + 1e-6:
+        # Scale-aware tolerance (round 3, F25) — mirrors the Numba twin.
+        lim = mlot[sup_box]
+        eps = 1e-9 * lim
+        if eps < 1e-6:
+            eps = 1e-6
+        if placement_top_loads[i] + pending_loads[i] + share > lim + eps:
             return False
     return True
 
@@ -305,11 +315,14 @@ cdef bint _ck_load_transitive(
     double cand_weight,
     double[::1] tl_inc,
     i64[::1] tl_touched,
+    const double[::1] pending_loads,
 ) noexcept nogil:
     """Transitive load CHECK — exact mirror of _check_load_transitive_njit:
     a dry-run of the transitive commit that rejects if any box in the
     downward chain would exceed its max_load_on_top (the direct check never
     rejects a fresh pure column — F19). Scratch all-zero in/out.
+    pending_loads: the block sibling-column overlay (F20); all-zero from
+    every non-block caller.
     """
     if cand_z <= 0 or cand_weight <= 0:
         return True
@@ -317,7 +330,7 @@ cdef bint _ck_load_transitive(
     cdef i64 i, k, sup_box, sup_rot
     cdef i64 sup_dx, sup_dy, sup_dz, sup_x, sup_y, sup_z
     cdef i64 x_lo, x_hi, y_lo, y_hi
-    cdef double area, share, w, inc, tarea
+    cdef double area, share, w, inc, tarea, lim, eps
     cdef i64 n_touched = 0, n_done = 0
     cdef i64 best_k, best_row, best_z, row_k, z_k, row_z
     cdef i64 r_box, r_rot, r_x, r_y, r_dx, r_dy, r_pallet
@@ -394,8 +407,12 @@ cdef bint _ck_load_transitive(
         tl_touched[n_done] = best_row
         n_done += 1
         inc = tl_inc[best_row]
-        if ok and (placement_top_loads[best_row] + inc
-                   > mlot[bps_order[best_row]] + 1e-6):
+        lim = mlot[bps_order[best_row]]
+        eps = 1e-9 * lim         # scale-aware tolerance (round 3, F25)
+        if eps < 1e-6:
+            eps = 1e-6
+        if ok and (placement_top_loads[best_row] + pending_loads[best_row]
+                   + inc > lim + eps):
             ok = False        # keep walking only to zero the scratch
         tl_inc[best_row] = 0.0
         if not ok:
@@ -649,6 +666,88 @@ cdef void _ap_load_contribution_transitive(
             tl_inc[i] += w
 
 
+cdef double _rider_inflow(
+    const i64[:, ::1] placements_out,
+    const i64[:, :, ::1] dims_all,
+    const i64[::1] bps_order,
+    const double[::1] weights,
+    const double[::1] placement_top_loads,
+    i64 n_placed,
+    i64 cand_pallet,
+    i64 cand_x, i64 cand_y, i64 cand_z,
+    i64 cand_dx, i64 cand_dy, i64 cand_dz,
+    int transitive,
+) noexcept nogil:
+    """Load the candidate would INHERIT by becoming a NEW supporter of
+    already-placed boxes (round 3, F21 "under-fill") — exact mirror of
+    _rider_inflow_njit. share = out_R * a / (T_old + a) per rider; old
+    supporters not debited (conservative). Zero-weight riders contribute
+    nothing.
+    """
+    cdef i64 cand_top = cand_z + cand_dz
+    cdef double inherited = 0.0
+    cdef i64 i, j, r_box, r_rot, r_dx, r_dy, r_x, r_y
+    cdef i64 s_box, s_rot, s_dx, s_dy, s_dz, s_x, s_y, s_z
+    cdef i64 x_lo, x_hi, y_lo, y_hi, sx_lo, sx_hi, sy_lo, sy_hi
+    cdef double a, out_r, t_old
+    for i in range(n_placed):
+        if placements_out[i, 5] == 0:
+            continue
+        if placements_out[i, 0] != cand_pallet:
+            continue
+        if placements_out[i, 4] != cand_top:
+            continue
+        r_box = bps_order[i]
+        r_rot = placements_out[i, 1]
+        r_dx = dims_all[r_box, r_rot, 0]
+        r_dy = dims_all[r_box, r_rot, 1]
+        r_x = placements_out[i, 2]
+        r_y = placements_out[i, 3]
+        x_lo = cand_x if cand_x > r_x else r_x
+        x_hi = cand_x + cand_dx if cand_x + cand_dx < r_x + r_dx else r_x + r_dx
+        if x_hi <= x_lo:
+            continue
+        y_lo = cand_y if cand_y > r_y else r_y
+        y_hi = cand_y + cand_dy if cand_y + cand_dy < r_y + r_dy else r_y + r_dy
+        if y_hi <= y_lo:
+            continue
+        a = <double>((x_hi - x_lo) * (y_hi - y_lo))
+        out_r = weights[r_box]
+        if transitive != 0:
+            out_r += placement_top_loads[i]
+        if out_r <= 0.0:
+            continue
+        t_old = 0.0
+        for j in range(n_placed):
+            if j == i:
+                continue
+            if placements_out[j, 5] == 0:
+                continue
+            if placements_out[j, 0] != cand_pallet:
+                continue
+            s_box = bps_order[j]
+            s_rot = placements_out[j, 1]
+            s_dz = dims_all[s_box, s_rot, 2]
+            s_z = placements_out[j, 4]
+            if s_z + s_dz != cand_top:
+                continue
+            s_dx = dims_all[s_box, s_rot, 0]
+            s_dy = dims_all[s_box, s_rot, 1]
+            s_x = placements_out[j, 2]
+            s_y = placements_out[j, 3]
+            sx_lo = r_x if r_x > s_x else s_x
+            sx_hi = r_x + r_dx if r_x + r_dx < s_x + s_dx else s_x + s_dx
+            if sx_hi <= sx_lo:
+                continue
+            sy_lo = r_y if r_y > s_y else s_y
+            sy_hi = r_y + r_dy if r_y + r_dy < s_y + s_dy else s_y + s_dy
+            if sy_hi <= sy_lo:
+                continue
+            t_old += <double>((sx_hi - sx_lo) * (sy_hi - sy_lo))
+        inherited += out_r * (a / (t_old + a))
+    return inherited
+
+
 # ---------------------------------------------------------------------------
 # Python-callable wrappers — match Numba signatures exactly.
 # ---------------------------------------------------------------------------
@@ -661,23 +760,25 @@ def _check_load_on_top_njit(
     cand_dx, cand_dy, cand_dz,
     cand_weight,
     support_ratio,
-    require_centroid=0,
-    require_full_support=0,
-    pallet_l=0,
-    pallet_w=0,
+    require_centroid,
+    require_full_support,
+    pallet_l,
+    pallet_w,
+    pending_loads,
 ):
     cdef const i64[:, ::1] po_v = placements_out
     cdef const i64[:, :, ::1] da_v = dims_all
     cdef const i64[::1] bo_v = bps_order
     cdef const double[::1] mlot_v = mlot
     cdef const double[::1] ptl_v = placement_top_loads
+    cdef const double[::1] pl_v = pending_loads
     return _ck_load_on_top(
         po_v, da_v, bo_v, mlot_v, ptl_v, n_placed,
         cand_pallet, cand_x, cand_y, cand_z,
         cand_dx, cand_dy, cand_dz,
         cand_weight, support_ratio,
         require_centroid, require_full_support,
-        pallet_l, pallet_w,
+        pallet_l, pallet_w, pl_v,
     )
 
 
@@ -743,4 +844,20 @@ def _apply_load_contribution_transitive_njit(
         po_v, da_v, bo_v, ptl_v, n_placed, cand_pallet,
         cand_x, cand_y, cand_z, cand_dx, cand_dy, cand_dz, cand_weight,
         ti_v, tt_v,
+    )
+
+
+def _rider_inflow_njit(
+    placements_out, dims_all, bps_order, weights,
+    placement_top_loads, n_placed, cand_pallet,
+    cand_x, cand_y, cand_z, cand_dx, cand_dy, cand_dz, transitive,
+):
+    cdef const i64[:, ::1] po_v = placements_out
+    cdef const i64[:, :, ::1] da_v = dims_all
+    cdef const i64[::1] bo_v = bps_order
+    cdef const double[::1] w_v = weights
+    cdef const double[::1] ptl_v = placement_top_loads
+    return _rider_inflow(
+        po_v, da_v, bo_v, w_v, ptl_v, n_placed, cand_pallet,
+        cand_x, cand_y, cand_z, cand_dx, cand_dy, cand_dz, transitive,
     )

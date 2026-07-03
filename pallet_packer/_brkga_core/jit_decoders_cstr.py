@@ -35,6 +35,7 @@ from .jit_decoders_geom import find_best_block_at_pos_njit
 from .jit_constraints import (
     _check_load_on_top_njit,
     _check_load_transitive_njit,
+    _rider_inflow_njit,
     _check_cog_envelope_njit,
     _apply_load_contribution_njit,
     _apply_load_contribution_transitive_njit,
@@ -85,6 +86,10 @@ def decode_njit_mode_cstr(
     placement_top_loads = np.zeros(n, dtype=np.float64)
     tl_inc = np.zeros(n, dtype=np.float64)
     tl_touched = np.zeros(n, dtype=np.int64)
+    # Round 3 (F20): sibling-column overlay for the check functions —
+    # all-zero here (this decoder has no multi-commit paths); required by
+    # the shared check signatures.
+    blk_inc = np.zeros(n, dtype=np.float64)
     pallet_sum_xw = np.zeros(MAX_BINS, dtype=np.float64)
     pallet_sum_yw = np.zeros(MAX_BINS, dtype=np.float64)
 
@@ -157,15 +162,33 @@ def decode_njit_mode_cstr(
                     b, bin_best_x, bin_best_y, bin_best_z,
                     dx, dy, dz, cand_weight, support_ratio,
                     require_centroid, rfs[box_idx],
-                    pallet_l, pallet_w):
+                    pallet_l, pallet_w, blk_inc):
                 continue  # try next bin
+            # Under-fill check (round 3, F21): if the candidate's top plane
+            # meets an existing box's bottom, it becomes a NEW supporter and
+            # inherits a contact-share of that rider's load. Reject when the
+            # candidate can't carry it; otherwise it flows down with the
+            # candidate's own weight (transitive) and is booked at commit.
+            inherited = _rider_inflow_njit(
+                placements_out, dims_all, bps_order, weights,
+                placement_top_loads, n,
+                b, bin_best_x, bin_best_y, bin_best_z,
+                dx, dy, dz, transitive)
+            if inherited > 0.0:
+                lim_c = mlot[box_idx]
+                eps_c = 1e-9 * lim_c
+                if eps_c < 1e-6:
+                    eps_c = 1e-6
+                if inherited > lim_c + eps_c:
+                    continue  # try next bin
             # Transitive load check (F19): the direct check never rejects a
             # fresh column — dry-run the downward flow too.
             if transitive != 0 and not _check_load_transitive_njit(
                     placements_out, dims_all, bps_order, mlot,
                     placement_top_loads, n,
                     b, bin_best_x, bin_best_y, bin_best_z,
-                    dx, dy, dz, cand_weight, tl_inc, tl_touched):
+                    dx, dy, dz, cand_weight + inherited,
+                    tl_inc, tl_touched, blk_inc):
                 continue  # try next bin
             # CoG envelope check (only when active).
             if cog_active != 0:
@@ -199,12 +222,17 @@ def decode_njit_mode_cstr(
             placements_out[i, 4] = bin_best_z
             placements_out[i, 5] = 1
             pallet_weights[b] += cand_weight
+            # F21: book the inherited rider load on the candidate's own row
+            # (row i was just committed; its counter starts at 0).
+            if inherited > 0.0:
+                placement_top_loads[i] += inherited
             if transitive != 0:
                 _apply_load_contribution_transitive_njit(
                     placements_out, dims_all, bps_order,
                     placement_top_loads, n,
                     b, bin_best_x, bin_best_y, bin_best_z,
-                    dx, dy, dz, cand_weight, tl_inc, tl_touched)
+                    dx, dy, dz, cand_weight + inherited,
+                    tl_inc, tl_touched)
             else:
                 _apply_load_contribution_njit(
                     placements_out, dims_all, bps_order,
@@ -296,7 +324,7 @@ def decode_njit_mode_cstr(
                         n_bins, best_x_n, best_y_n, best_z_n,
                         dx, dy, dz, cand_weight, support_ratio,
                         require_centroid, rfs[box_idx],
-                        pallet_l, pallet_w):
+                        pallet_l, pallet_w, blk_inc):
                     placements_out[i, 5] = 0
                     continue
             new_count = commit_ems_njit(
@@ -479,6 +507,13 @@ def decode_blocks_njit_mode_cstr(
     placement_top_loads = np.zeros(n, dtype=np.float64)
     tl_inc = np.zeros(n, dtype=np.float64)
     tl_touched = np.zeros(n, dtype=np.int64)
+    # Round 3 (F20): the sibling-column overlay. During Phase 2c each
+    # ACCEPTED column's external contribution accumulates here so later
+    # sibling columns are checked against the running aggregate instead of
+    # the stale pre-block state (pre-fix a k*l block could jointly crush a
+    # shared supporter that every per-column check individually passed).
+    # All-zero outside Phase 2c.
+    blk_inc = np.zeros(n, dtype=np.float64)
     pallet_sum_xw = np.zeros(MAX_BINS, dtype=np.float64)
     pallet_sum_yw = np.zeros(MAX_BINS, dtype=np.float64)
 
@@ -545,12 +580,48 @@ def decode_blocks_njit_mode_cstr(
                 k, l, m, box_weight, box_mlot, cap_remain)
             if k * l * m < 1:
                 continue  # can't even fit a single box weight-wise
+            # Phase 2c-pre (round 3, F21): a block column placed directly
+            # beneath an existing box's bottom plane would become its NEW
+            # supporter and inherit load the block bookkeeping cannot
+            # carry. Blocks with riders on any column top are shrunk to a
+            # single box (1x1x1), which gets exact rider semantics below.
+            rider_free = True
+            for bx_ll in range(l):
+                for bx_kk in range(k):
+                    if _rider_inflow_njit(
+                            placements_out, dims_all, bps_order, weights,
+                            placement_top_loads, n,
+                            b, best_x + bx_kk * dx, best_y + bx_ll * dy,
+                            best_z, dx, dy, m * dz, transitive) > 0.0:
+                        rider_free = False
+                        break
+                if not rider_free:
+                    break
+            inherited_blk = 0.0
+            if not rider_free:
+                k, l, m = 1, 1, 1
+                inherited_blk = _rider_inflow_njit(
+                    placements_out, dims_all, bps_order, weights,
+                    placement_top_loads, n,
+                    b, best_x, best_y, best_z, dx, dy, dz, transitive)
+                if inherited_blk > 0.0:
+                    lim_c = mlot[box_idx]
+                    eps_c = 1e-9 * lim_c
+                    if eps_c < 1e-6:
+                        eps_c = 1e-6
+                    if inherited_blk > lim_c + eps_c:
+                        continue  # next bin
             # Phase 2c: PER-bottom-box support + load check. The validator
             # checks every box individually, so a block-aggregate check is
             # wrong (a 3x1 bottom layer can average >= support_ratio while a
             # corner box sits at 0.4 -> the validator floats it). Check each of
             # the k*l bottom boxes at its own footprint. Mirrors the Cython
             # port's _decode_cstr_blocks_loop (kept bit-equivalent on purpose).
+            # Round 3 (F20): checks run against placement_top_loads PLUS the
+            # blk_inc overlay, and each ACCEPTED column's contribution is
+            # accumulated into the overlay before the next column is checked
+            # — sibling columns can no longer jointly crush a shared
+            # supporter that each individual check passed.
             bottom_ok = True
             for bx_ll in range(l):
                 for bx_kk in range(k):
@@ -560,38 +631,68 @@ def decode_blocks_njit_mode_cstr(
                             b, best_x + bx_kk * dx, best_y + bx_ll * dy, best_z,
                             dx, dy, dz, box_weight, support_ratio,
                             require_centroid, rfs[box_idx],
-                            pallet_l, pallet_w):
+                            pallet_l, pallet_w, blk_inc):
                         bottom_ok = False
                         break
                     # Transitive (F19): each bottom box relays its whole
-                    # column (m*w) to the external chain below.
+                    # column (m*w) to the external chain below (plus the
+                    # inherited rider load when shrunk to a single box).
                     if transitive != 0 and not _check_load_transitive_njit(
                             placements_out, dims_all, bps_order, mlot,
                             placement_top_loads, n,
                             b, best_x + bx_kk * dx, best_y + bx_ll * dy, best_z,
-                            dx, dy, dz, float(m) * box_weight,
-                            tl_inc, tl_touched):
+                            dx, dy, dz, float(m) * box_weight + inherited_blk,
+                            tl_inc, tl_touched, blk_inc):
                         bottom_ok = False
                         break
+                    # Accumulate the accepted column's external contribution
+                    # into the overlay (writes blk_inc, not the real loads).
+                    if transitive != 0:
+                        _apply_load_contribution_transitive_njit(
+                            placements_out, dims_all, bps_order,
+                            blk_inc, n,
+                            b, best_x + bx_kk * dx, best_y + bx_ll * dy,
+                            best_z, dx, dy, dz,
+                            float(m) * box_weight + inherited_blk,
+                            tl_inc, tl_touched)
+                    else:
+                        _apply_load_contribution_njit(
+                            placements_out, dims_all, bps_order,
+                            blk_inc, n,
+                            b, best_x + bx_kk * dx, best_y + bx_ll * dy,
+                            best_z, dx, dy, dz, box_weight)
                 if not bottom_ok:
                     break
+            # Wipe the overlay (touched rows are not tracked — O(n) is fine,
+            # Phase 2c runs once per block attempt).
+            for zz in range(n):
+                blk_inc[zz] = 0.0
             if not bottom_ok:
                 # Try shrinking block (l, k → 1) before giving up on bin.
                 k, l = 1, 1
+                if _rider_inflow_njit(
+                        placements_out, dims_all, bps_order, weights,
+                        placement_top_loads, n,
+                        b, best_x, best_y, best_z,
+                        dx, dy, m * dz, transitive) > 0.0:
+                    # Rider on the shrunk column's top: only the exact
+                    # single-box path (m == 1, handled above) may carry
+                    # inherited load — give up on this bin.
+                    continue  # next bin
                 if not _check_load_on_top_njit(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, best_x, best_y, best_z,
                         dx, dy, dz, box_weight, support_ratio,
                         require_centroid, rfs[box_idx],
-                        pallet_l, pallet_w):
+                        pallet_l, pallet_w, blk_inc):
                     continue  # next bin
                 if transitive != 0 and not _check_load_transitive_njit(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, best_x, best_y, best_z,
                         dx, dy, dz, float(m) * box_weight,
-                        tl_inc, tl_touched):
+                        tl_inc, tl_touched, blk_inc):
                     continue  # next bin
             # Phase 2d: CoG envelope check (block treated as point mass at
             # the bottom-layer footprint centroid; total weight = k*l*m*w).
@@ -613,6 +714,12 @@ def decode_blocks_njit_mode_cstr(
                 dx, dy, dz, k, l, m, my_sku, box_weight, b)
             sku_remaining[my_sku] -= placed_so_far
             pallet_weights[b] += float(placed_so_far) * box_weight
+            # F21: book the inherited rider load on the committed box's own
+            # row (only ever nonzero for the shrunk 1x1x1 case, whose sole
+            # committed row is i). Booked even at best_z == 0 — a floor box
+            # under a rider carries the load with nothing below to flow to.
+            if inherited_blk > 0.0:
+                placement_top_loads[i] += inherited_blk
             # Apply load contribution from bottom layer to external supporters.
             # Each bottom-layer box contributes box_weight via its own footprint.
             # Iterate the same-SKU bottom-layer placements just committed.
@@ -635,12 +742,14 @@ def decode_blocks_njit_mode_cstr(
                         # The bottom box carries its whole column (the
                         # block-internal seeding is already transitive), so
                         # the FULL column weight flows through it to the
-                        # external supporters and on down (F19).
+                        # external supporters and on down (F19), plus any
+                        # inherited rider load (F21; 1x1x1 only).
                         _apply_load_contribution_transitive_njit(
                             placements_out, dims_all, bps_order,
                             placement_top_loads, n,
                             b, placements_out[jj, 2], placements_out[jj, 3],
-                            best_z, dx, dy, dz, float(m) * box_weight,
+                            best_z, dx, dy, dz,
+                            float(m) * box_weight + inherited_blk,
                             tl_inc, tl_touched)
                     else:
                         _apply_load_contribution_njit(
@@ -775,7 +884,7 @@ def decode_blocks_njit_mode_cstr(
                             best_y_n + bx_ll * dy, best_z_n,
                             dx, dy, dz, box_weight, support_ratio,
                             require_centroid, rfs[box_idx],
-                            pallet_l, pallet_w):
+                            pallet_l, pallet_w, blk_inc):
                         deck_ok = False
                         break
                 if not deck_ok:
@@ -788,7 +897,7 @@ def decode_blocks_njit_mode_cstr(
                         n_bins, best_x_n, best_y_n, best_z_n,
                         dx, dy, dz, box_weight, support_ratio,
                         require_centroid, rfs[box_idx],
-                        pallet_l, pallet_w):
+                        pallet_l, pallet_w, blk_inc):
                     placements_out[i, 5] = 0
                     placed[i] = 1
                     sku_remaining[my_sku] -= 1
@@ -899,6 +1008,9 @@ def decode_layer_njit_cstr(
     placement_top_loads = np.zeros(n, dtype=np.float64)
     tl_inc = np.zeros(n, dtype=np.float64)
     tl_touched = np.zeros(n, dtype=np.int64)
+    # Round 3 (F20): all-zero overlay for the shared check signatures
+    # (this decoder commits per box — no multi-commit staleness).
+    blk_inc = np.zeros(n, dtype=np.float64)
     pallet_sum_xw = np.zeros(MAX_BINS, dtype=np.float64)
     pallet_sum_yw = np.zeros(MAX_BINS, dtype=np.float64)
 
@@ -945,19 +1057,34 @@ def decode_layer_njit_cstr(
                         pallet_max_weight,
                         cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                         cog_min_load_frac)
+                # F21 (round 3): load inherited by under-filling beneath
+                # already-placed boxes; see _rider_inflow_njit.
+                inherited = _rider_inflow_njit(
+                    placements_out, dims_all, bps_order, weights,
+                    placement_top_loads, n,
+                    b, bin_best_x, bin_best_y, bin_best_z,
+                    dx, dy, dz, transitive)
+                if cog_ok and inherited > 0.0:
+                    lim_c = mlot[box_idx]
+                    eps_c = 1e-9 * lim_c
+                    if eps_c < 1e-6:
+                        eps_c = 1e-6
+                    if inherited > lim_c + eps_c:
+                        cog_ok = False
                 if cog_ok and transitive != 0:
                     cog_ok = _check_load_transitive_njit(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, bin_best_x, bin_best_y, bin_best_z,
-                        dx, dy, dz, cand_weight, tl_inc, tl_touched)
+                        dx, dy, dz, cand_weight + inherited,
+                        tl_inc, tl_touched, blk_inc)
                 if cog_ok and _check_load_on_top_njit(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, bin_best_x, bin_best_y, bin_best_z,
                         dx, dy, dz, cand_weight, support_ratio,
                         require_centroid, rfs[box_idx],
-                        pallet_l, pallet_w):
+                        pallet_l, pallet_w, blk_inc):
                     new_count = commit_ems_njit(
                         bin_emss[b], bin_ems_count[b],
                         bin_best_x, bin_best_y, bin_best_z,
@@ -979,12 +1106,15 @@ def decode_layer_njit_cstr(
                     placements_out[i, 4] = bin_best_z
                     placements_out[i, 5] = 1
                     pallet_weights[b] += cand_weight
+                    if inherited > 0.0:              # F21: book on own row
+                        placement_top_loads[i] += inherited
                     if transitive != 0:
                         _apply_load_contribution_transitive_njit(
                             placements_out, dims_all, bps_order,
                             placement_top_loads, n,
                             b, bin_best_x, bin_best_y, bin_best_z,
-                            dx, dy, dz, cand_weight, tl_inc, tl_touched)
+                            dx, dy, dz, cand_weight + inherited,
+                            tl_inc, tl_touched)
                     else:
                         _apply_load_contribution_njit(
                             placements_out, dims_all, bps_order,
@@ -1040,19 +1170,33 @@ def decode_layer_njit_cstr(
                         pallet_max_weight,
                         cog_x_min, cog_x_max, cog_y_min, cog_y_max,
                         cog_min_load_frac)
+                # F21 (round 3): under-fill inherited load; see Phase 1.
+                inherited = _rider_inflow_njit(
+                    placements_out, dims_all, bps_order, weights,
+                    placement_top_loads, n,
+                    b, new_slab_start, new_best_y, new_best_z,
+                    dx, dy, dz, transitive)
+                if cog_ok and inherited > 0.0:
+                    lim_c = mlot[box_idx]
+                    eps_c = 1e-9 * lim_c
+                    if eps_c < 1e-6:
+                        eps_c = 1e-6
+                    if inherited > lim_c + eps_c:
+                        cog_ok = False
                 if cog_ok and transitive != 0:
                     cog_ok = _check_load_transitive_njit(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, new_slab_start, new_best_y, new_best_z,
-                        dx, dy, dz, cand_weight, tl_inc, tl_touched)
+                        dx, dy, dz, cand_weight + inherited,
+                        tl_inc, tl_touched, blk_inc)
                 if cog_ok and _check_load_on_top_njit(
                         placements_out, dims_all, bps_order, mlot,
                         placement_top_loads, n,
                         b, new_slab_start, new_best_y, new_best_z,
                         dx, dy, dz, cand_weight, support_ratio,
                         require_centroid, rfs[box_idx],
-                        pallet_l, pallet_w):
+                        pallet_l, pallet_w, blk_inc):
                     new_count = commit_ems_njit(
                         bin_emss[b], bin_ems_count[b],
                         new_slab_start, new_best_y, new_best_z,
@@ -1076,12 +1220,15 @@ def decode_layer_njit_cstr(
                     pallet_weights[b] += cand_weight
                     bin_slab_min_x[b] = new_slab_start
                     bin_slab_max_x[b] = new_slab_start + dx
+                    if inherited > 0.0:              # F21: book on own row
+                        placement_top_loads[i] += inherited
                     if transitive != 0:
                         _apply_load_contribution_transitive_njit(
                             placements_out, dims_all, bps_order,
                             placement_top_loads, n,
                             b, new_slab_start, new_best_y, new_best_z,
-                            dx, dy, dz, cand_weight, tl_inc, tl_touched)
+                            dx, dy, dz, cand_weight + inherited,
+                            tl_inc, tl_touched)
                     else:
                         _apply_load_contribution_njit(
                             placements_out, dims_all, bps_order,
@@ -1143,7 +1290,7 @@ def decode_layer_njit_cstr(
                     n_bins, 0, seed_y, seed_z,
                     dx, dy, dz, cand_weight, support_ratio,
                     require_centroid, rfs[box_idx],
-                    pallet_l, pallet_w):
+                    pallet_l, pallet_w, blk_inc):
                 placements_out[i, 5] = 0
                 continue
         new_count = commit_ems_njit(

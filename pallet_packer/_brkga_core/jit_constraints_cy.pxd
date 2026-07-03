@@ -28,6 +28,7 @@ cdef bint _ck_load_on_top(
     int require_full_support,
     i64 pallet_l,
     i64 pallet_w,
+    const double[::1] pending_loads,
 ) noexcept nogil
 
 
@@ -82,6 +83,21 @@ cdef bint _ck_load_transitive(
     double cand_weight,
     double[::1] tl_inc,
     i64[::1] tl_touched,
+    const double[::1] pending_loads,
+) noexcept nogil
+
+
+cdef double _rider_inflow(
+    const i64[:, ::1] placements_out,
+    const i64[:, :, ::1] dims_all,
+    const i64[::1] bps_order,
+    const double[::1] weights,
+    const double[::1] placement_top_loads,
+    i64 n_placed,
+    i64 cand_pallet,
+    i64 cand_x, i64 cand_y, i64 cand_z,
+    i64 cand_dx, i64 cand_dy, i64 cand_dz,
+    int transitive,
 ) noexcept nogil
 
 

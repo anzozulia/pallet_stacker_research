@@ -194,6 +194,14 @@ def validate_packing_input(
         if not m_ok:
             problems.append(
                 f"{label}.max_load_on_top must be >= 0 or infinity (got {m!r})")
+        elif math.isfinite(float(m)) and float(m) >= MAX_BOX_WEIGHT:
+            # Round 3 (F29 seam): a finite mlot must obey the same bound as
+            # weights — an un-bounded finite value defeats the 1e18
+            # _NO_LIMIT sentinel headroom in the JIT arrays. Use +inf for
+            # "unlimited".
+            problems.append(
+                f"{label}.max_load_on_top is out of the supported range "
+                f"(must be < {MAX_BOX_WEIGHT:.0e} or infinity, got {m!r})")
         rots = getattr(b, "allowed_rotations", None)
         if not rots:
             problems.append(f"{label}.allowed_rotations must be non-empty")

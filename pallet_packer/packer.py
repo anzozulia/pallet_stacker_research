@@ -27,6 +27,7 @@ from typing import Callable, List, Optional, Tuple
 
 from .models import (
     EPS,
+    load_tol,
     Box,
     Pallet,
     Placement,
@@ -132,25 +133,62 @@ class PalletState:
     def _collides(self, cand: Placement) -> bool:
         return any(cand.overlaps(p) for p in self.placements)
 
+    def _rider_inflow(self, cand: Placement) -> float:
+        """Load the candidate would INHERIT by becoming a new supporter of
+        already-placed boxes (round 3, F21 "under-fill").
+
+        A box placed with its top exactly at an existing box's bottom,
+        overlapping it in XY, physically takes a contact-share of that
+        rider's outflow — the checks below the candidate never see it, so
+        it must be checked (feasible) and booked (commit) explicitly.
+        Per rider R: T_old = R's existing supporter contact, a = contact
+        with cand, share = out_R * a / (T_old + a) with out_R = R's weight
+        plus the load already resting on R (the _top_load cache is
+        transitive — v2 has always committed transitively — so the
+        inherited amount uses the same semantics as the cache it lands in).
+        Old supporters are deliberately NOT debited: strictly conservative,
+        no negative propagation, no float dust.
+        """
+        inherited = 0.0
+        for r in self.placements:
+            if abs(r.z - cand.z2) > EPS:
+                continue
+            ox = min(cand.x2, r.x2) - max(cand.x, r.x)
+            oy = min(cand.y2, r.y2) - max(cand.y, r.y)
+            if ox <= EPS or oy <= EPS:
+                continue
+            a = ox * oy
+            t_old = sum(ar for _, ar in self._supporters_of(r))
+            out_r = r.box.weight + self._top_load.get(id(r), 0.0)
+            if out_r <= 0.0:
+                continue
+            inherited += out_r * (a / (t_old + a))
+        return inherited
+
     def _load_bearing_ok(
-        self, cand: Placement, supporters: List[Tuple[Placement, float]]
+        self, cand: Placement, supporters: List[Tuple[Placement, float]],
+        extra_load: float = 0.0,
     ) -> bool:
         """O(N) check using the cached _top_load on each placement.
 
         Each placement i tracks how much weight currently rests on its top
         (the sum of (supported_weight × contact_share) from items above).
-        The candidate would add `cand.box.weight × (a/total_area)` to each
+        The candidate would add `flow_w × (a/total_area)` to each
         supporter; we reject if any supporter would exceed its limit.
+        `extra_load` is the rider inflow the candidate inherits by becoming
+        a new supporter of existing boxes (F21) — it flows down with the
+        candidate's own weight.
         """
         if not supporters:
             return True
         total_area = sum(a for _, a in supporters)
         if total_area <= 0:
             return True
+        flow_w = cand.box.weight + extra_load
         for s, a in supporters:
-            added = cand.box.weight * (a / total_area)
+            added = flow_w * (a / total_area)
             current = self._top_load.get(id(s), 0.0)
-            if current + added > s.box.max_load_on_top + EPS:
+            if current + added > s.box.max_load_on_top + load_tol(s.box.max_load_on_top):
                 return False
         if getattr(self.config, "transitive_load_bearing", False):
             # F19 (hardening round 2): the direct check above never rejects
@@ -161,7 +199,7 @@ class PalletState:
             inflow: dict = {}
             for s, a in supporters:
                 inflow[id(s)] = (inflow.get(id(s), 0.0)
-                                 + cand.box.weight * (a / total_area))
+                                 + flow_w * (a / total_area))
             frontier = sorted((s for s, _ in supporters),
                               key=lambda p: (-p.z, p.x, p.y))
             seen = {id(s) for s, _ in supporters}
@@ -169,7 +207,8 @@ class PalletState:
                 p = frontier.pop(0)
                 inc = inflow.get(id(p), 0.0)
                 if (self._top_load.get(id(p), 0.0) + inc
-                        > p.box.max_load_on_top + EPS):
+                        > p.box.max_load_on_top
+                        + load_tol(p.box.max_load_on_top)):
                     return False
                 if inc <= 0 or p.z <= EPS:
                     continue
@@ -230,7 +269,8 @@ class PalletState:
         if self._collides(cand):
             return False
         # 2. Weight budget
-        if self.total_weight + cand.box.weight > self.pallet.max_weight + EPS:
+        if (self.total_weight + cand.box.weight
+                > self.pallet.max_weight + load_tol(self.pallet.max_weight)):
             return False
         # 3. Support / no-floating
         supporters = self._supporters_of(cand)
@@ -260,9 +300,18 @@ class PalletState:
             if min_support > 0.0 and (
                     footprint <= 0 or contact / footprint < min_support - EPS):
                 return False
-        # 4. Load bearing
-        if self.config.enforce_load_bearing and not self._load_bearing_ok(cand, supporters):
-            return False
+        # 4. Load bearing (incl. F21: load inherited by under-filling
+        #    beneath already-placed boxes — the candidate becomes their
+        #    supporter and must be able to carry its share, and that share
+        #    flows on down through the candidate's own chain).
+        if self.config.enforce_load_bearing:
+            inherited = self._rider_inflow(cand)
+            if (inherited > cand.box.max_load_on_top
+                    + load_tol(cand.box.max_load_on_top)):
+                return False
+            if not self._load_bearing_ok(cand, supporters,
+                                         extra_load=inherited):
+                return False
         # 5. CoG envelope
         if not self._cog_ok(cand):
             return False
@@ -367,21 +416,23 @@ class PalletState:
         # Update the cached top-load on supporters BEFORE appending,
         # so we don't accidentally include the new box as its own supporter.
         sups = self._supporters_of(cand)
-        sup_area = sum(a for _, a in sups)
-        if sup_area > 0:
-            # Direct supporters carry cand's own weight, in proportion.
-            for s, a in sups:
-                share = cand.box.weight * (a / sup_area)
-                self._top_load[id(s)] = self._top_load.get(id(s), 0.0) + share
-                # Transitive: cand's weight also flows down through whatever
-                # the supporters themselves rest on. A simple recursive walk
-                # handles arbitrarily-stacked towers; the visit set keeps it
-                # linear in the support DAG.
-                self._propagate_load(s, share, set())
+        # F21 (round 3): load inherited by under-filling beneath existing
+        # boxes — booked onto the candidate and flowed down with its own
+        # weight. Computed BEFORE appending (the rider scan must not see
+        # the candidate itself). Old supporters keep their full shares
+        # (conservative over-booking; see _rider_inflow).
+        inherited = self._rider_inflow(cand)
+        if sups:
+            # Direct supporters carry cand's own weight (plus its inherited
+            # rider load) in proportion to contact, and the flow continues
+            # down the support DAG (historical v2 semantics; exact diamond
+            # handling since round 3 — see _apply_load_flow).
+            self._apply_load_flow(sups, cand.box.weight + inherited)
 
         self.placements.append(cand)
         self.total_weight += cand.box.weight
-        self._top_load.setdefault(id(cand), 0.0)
+        self._top_load[id(cand)] = (self._top_load.get(id(cand), 0.0)
+                                    + inherited)
         # Remove the consumed EP if exactly at cand's origin.
         used = (cand.x, cand.y, cand.z)
         self.extreme_points = [
@@ -417,21 +468,49 @@ class PalletState:
                 return True
         return False
 
-    def _propagate_load(self, placement: Placement, weight: float,
-                        visited: set) -> None:
-        """Distribute `weight` recursively to whatever `placement` rests on."""
-        key = id(placement)
-        if key in visited:
-            return
-        visited.add(key)
-        sups = self._supporters_of(placement)
+    def _apply_load_flow(self, sups: List[Tuple[Placement, float]],
+                         weight: float) -> None:
+        """Distribute `weight` over direct supporters and on down the
+        support DAG, updating the _top_load cache.
+
+        Round 3 (F22): the old recursive `_propagate_load` used a visited
+        set that ADDED a re-converged diamond node's second share but
+        BLOCKED its onward distribution — everything below the junction
+        permanently undercounted, so the check (`_load_bearing_ok`, which
+        is exact) and the commit disagreed with each other. This is the
+        same accumulate-then-distribute worklist as the dry-run: highest
+        bottom-z first, a node's inflow is complete before it is applied
+        and forwarded, exact on arbitrary DAGs.
+        """
         total_area = sum(a for _, a in sups)
-        if total_area <= 0:
+        if total_area <= 0 or weight <= 0:
             return
+        inflow: dict = {}
         for s, a in sups:
-            share = weight * (a / total_area)
-            self._top_load[id(s)] = self._top_load.get(id(s), 0.0) + share
-            self._propagate_load(s, share, visited)
+            inflow[id(s)] = (inflow.get(id(s), 0.0)
+                             + weight * (a / total_area))
+        frontier = sorted((s for s, _ in sups),
+                          key=lambda p: (-p.z, p.x, p.y))
+        seen = {id(s) for s, _ in sups}
+        while frontier:
+            p = frontier.pop(0)
+            inc = inflow.get(id(p), 0.0)
+            if inc <= 0:
+                continue
+            self._top_load[id(p)] = self._top_load.get(id(p), 0.0) + inc
+            if p.z <= EPS:
+                continue
+            subs = self._supporters_of(p)
+            sub_area = sum(a for _, a in subs)
+            if sub_area <= 0:
+                continue
+            for s2, a2 in subs:
+                inflow[id(s2)] = (inflow.get(id(s2), 0.0)
+                                  + inc * (a2 / sub_area))
+                if id(s2) not in seen:
+                    seen.add(id(s2))
+                    frontier.append(s2)
+            frontier.sort(key=lambda p2: (-p2.z, p2.x, p2.y))
 
     def _gravity_project(
         self, ep: Tuple[float, float, float]
@@ -479,17 +558,13 @@ def regen_top_load(st: "PalletState") -> dict:
     """
     st._top_load = {id(p): 0.0 for p in st.placements}
     # For every placement, distribute its weight onto its supporters using
-    # the same model as _commit. Iterate placements in bottom-up z order so
-    # supporters are processed before supportees.
+    # the same model as _commit (exact worklist flow since round 3, F22).
+    # Each box's flow is independent and additive, so iteration order does
+    # not matter; keep bottom-up z for determinism of float accumulation.
     for p in sorted(st.placements, key=lambda pl: pl.z):
         sups = st._supporters_of(p)
-        total_area = sum(a for _, a in sups)
-        if total_area <= 0:
-            continue
-        for s, a in sups:
-            share = p.box.weight * (a / total_area)
-            st._top_load[id(s)] = st._top_load.get(id(s), 0.0) + share
-            st._propagate_load(s, share, set())
+        if sups:
+            st._apply_load_flow(sups, p.box.weight)
     return st._top_load
 
 

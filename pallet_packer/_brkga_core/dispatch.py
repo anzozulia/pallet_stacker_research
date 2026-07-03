@@ -16,13 +16,16 @@ bit-identical at n=12 BR regression.
 """
 from __future__ import annotations
 
+import logging
 from typing import List, Optional
 
 import numpy as np
 
 from ..models import Box, Pallet, PackerConfig, Placement
 from ..packer import PackResult, PalletState
-from ..brkga_v3_fast import precompute_box_dims
+from ..brkga_v3_fast import precompute_box_dims, _fitness_pallet1
+
+logger = logging.getLogger(__name__)
 from .precompute import _NO_LIMIT
 from .blocks import resolve_sku_blocks_from_chrom
 # Prefer the Cython-compiled geometric decoders when the .so is present
@@ -465,6 +468,14 @@ try:
 except ImportError:
     _BATCH_AVAILABLE = False
 
+# Round 3 (F24): _BATCH_AVAILABLE used to be set but never CONSULTED —
+# decode_population_fitness called the Cython-only batch entries
+# unconditionally, so every constrained solve on a host without the
+# compiled .so died with NameError on generation 0, contradicting the
+# numba-fallback promise above. The flag now gates a per-chromosome
+# scalar fallback (see decode_population_fitness).
+_BATCH_FALLBACK_WARNED = False
+
 
 def _compute_fitness_pallet1_batch(
     placements_out_all: np.ndarray,   # (pop_size, n, 6)
@@ -577,6 +588,39 @@ def decode_population_fitness(
                                np.searchsorted(mode_cdf, selectors, side='right'))
     else:
         modes = np.zeros(pop_size, dtype=np.int64)
+
+    if not _BATCH_AVAILABLE:
+        # No compiled Cython extensions on this host: the batch entries do
+        # not exist. Run the docstring's reference loop literally — scalar
+        # decode + scalar fitness per chromosome (Numba path). Slower (no
+        # prange, a PackResult per chromosome) but functionally identical;
+        # keeps the documented no-build-toolchain promise (round 3, F24).
+        global _BATCH_FALLBACK_WARNED
+        if not _BATCH_FALLBACK_WARNED:
+            logger.warning(
+                "pallet_packer: Cython batch decoders unavailable — falling "
+                "back to per-chromosome scalar decodes (build the extensions "
+                "for full speed)")
+            _BATCH_FALLBACK_WARNED = True
+        fits = np.empty(pop_size, dtype=np.float64)
+        for i in range(pop_size):
+            res = decode_chromosome(
+                population[i], boxes, pallet, config, n_rots_arr, dims_all,
+                mode=int(modes[i]), max_pallets=max_pallets,
+                sku_id_per_box=sku_id_per_box,
+                sku_best_block=sku_best_block,
+                sku_top_k_blocks=sku_top_k_blocks,
+                weights=weights, mlot=mlot, rfs=rfs,
+                pallet_max_weight=pallet_max_weight,
+                has_constraints=has_constraints,
+                support_ratio=support_ratio,
+                require_centroid=require_centroid,
+                cog_x_min=cog_x_min, cog_x_max=cog_x_max,
+                cog_y_min=cog_y_min, cog_y_max=cog_y_max,
+                cog_min_load_frac=cog_min_load_frac, cog_active=cog_active,
+                max_overhang=max_overhang)
+            fits[i] = _fitness_pallet1(res, pallet, realism=realism)
+        return fits
 
     # Allocate the per-chromosome output buffers up front. All mode groups
     # write into different rows of the same buffer — no contention.
