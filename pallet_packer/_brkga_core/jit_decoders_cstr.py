@@ -78,6 +78,12 @@ def decode_njit_mode_cstr(
     """
     n = bps_order.shape[0]
     MAX_BINS = max_pallets if max_pallets > 0 else 32
+    # Scale-aware pallet-cap tolerance (round 5, R1): unifies the cap
+    # epsilon with load_tol — the absolute 1e-6 vanished below one ulp
+    # at caps >= ~4.5e9 and disagreed with v2's feasible/validate.
+    eps_w = 1e-9 * pallet_max_weight
+    if eps_w < 1e-6:
+        eps_w = 1e-6
     bin_emss = np.zeros((MAX_BINS, MAX_EMS, 2, 3), dtype=np.int64)
     bin_ems_count = np.zeros(MAX_BINS, dtype=np.int64)
     n_bins = 0
@@ -101,7 +107,7 @@ def decode_njit_mode_cstr(
 
         for b in range(n_bins):
             # Pre-check: pallet weight cap.
-            if pallet_weights[b] + cand_weight > pallet_max_weight + 1e-6:
+            if pallet_weights[b] + cand_weight > pallet_max_weight + eps_w:
                 continue
             # Find best (rot, x, y, z) for this bin.
             bin_best_rot = -1
@@ -250,7 +256,7 @@ def decode_njit_mode_cstr(
                 placements_out[i, 5] = 0
                 continue
             # Open new bin and try to place there.
-            if cand_weight > pallet_max_weight + 1e-6:
+            if cand_weight > pallet_max_weight + eps_w:
                 # Box alone exceeds pallet cap — cannot pack at all.
                 placements_out[i, 5] = 0
                 continue
@@ -498,6 +504,12 @@ def decode_blocks_njit_mode_cstr(
     """
     n = bps_order.shape[0]
     MAX_BINS = max_pallets if max_pallets > 0 else 32
+    # Scale-aware pallet-cap tolerance (round 5, R1): unifies the cap
+    # epsilon with load_tol — the absolute 1e-6 vanished below one ulp
+    # at caps >= ~4.5e9 and disagreed with v2's feasible/validate.
+    eps_w = 1e-9 * pallet_max_weight
+    if eps_w < 1e-6:
+        eps_w = 1e-6
     bin_emss = np.zeros((MAX_BINS, MAX_EMS, 2, 3), dtype=np.int64)
     bin_ems_count = np.zeros(MAX_BINS, dtype=np.int64)
     n_bins = 0
@@ -532,7 +544,7 @@ def decode_blocks_njit_mode_cstr(
         box_mlot = mlot[box_idx]
 
         # If a single box alone exceeds pallet cap, can't pack at all.
-        if box_weight > pallet_max_weight + 1e-6:
+        if box_weight > pallet_max_weight + eps_w:
             placements_out[i, 5] = 0
             placed[i] = 1
             sku_remaining[my_sku] -= 1
@@ -541,7 +553,7 @@ def decode_blocks_njit_mode_cstr(
         block_committed = False
         for b in range(n_bins):
             # Pre-check: pallet weight cap for at least a single box.
-            if pallet_weights[b] + box_weight > pallet_max_weight + 1e-6:
+            if pallet_weights[b] + box_weight > pallet_max_weight + eps_w:
                 continue
             # Phase 1: DFTRC place single box.
             best_rot = -1
@@ -678,6 +690,10 @@ def decode_blocks_njit_mode_cstr(
                     # Rider on the shrunk column's top: only the exact
                     # single-box path (m == 1, handled above) may carry
                     # inherited load — give up on this bin.
+                    # LOAD-BEARING GUARD (round 4, R8): the fallback checks
+                    # below omit inherited_blk while Phase 3 books it —
+                    # removing this "redundant" re-check reopens the F21
+                    # under-fill hole for the rider_free=False path.
                     continue  # next bin
                 if not _check_load_on_top_njit(
                         placements_out, dims_all, bps_order, mlot,
@@ -998,6 +1014,12 @@ def decode_layer_njit_cstr(
     """
     n = bps_order.shape[0]
     MAX_BINS = max_pallets if max_pallets > 0 else 32
+    # Scale-aware pallet-cap tolerance (round 5, R1): unifies the cap
+    # epsilon with load_tol — the absolute 1e-6 vanished below one ulp
+    # at caps >= ~4.5e9 and disagreed with v2's feasible/validate.
+    eps_w = 1e-9 * pallet_max_weight
+    if eps_w < 1e-6:
+        eps_w = 1e-6
     bin_emss = np.zeros((MAX_BINS, MAX_EMS, 2, 3), dtype=np.int64)
     bin_ems_count = np.zeros(MAX_BINS, dtype=np.int64)
     bin_slab_min_x = np.zeros(MAX_BINS, dtype=np.int64)
@@ -1022,7 +1044,7 @@ def decode_layer_njit_cstr(
 
         for b in range(n_bins):
             # Pre-check pallet weight cap.
-            if pallet_weights[b] + cand_weight > pallet_max_weight + 1e-6:
+            if pallet_weights[b] + cand_weight > pallet_max_weight + eps_w:
                 continue
             # Phase 1: try current slab.
             bin_best_rot = -1
@@ -1248,7 +1270,7 @@ def decode_layer_njit_cstr(
         if n_bins >= MAX_BINS:
             placements_out[i, 5] = 0
             continue
-        if cand_weight > pallet_max_weight + 1e-6:
+        if cand_weight > pallet_max_weight + eps_w:
             placements_out[i, 5] = 0
             continue
         bin_emss[n_bins, 0, 0, 0] = 0

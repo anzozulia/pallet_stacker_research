@@ -595,6 +595,11 @@ def decode_population_fitness(
         # decode + scalar fitness per chromosome (Numba path). Slower (no
         # prange, a PackResult per chromosome) but functionally identical;
         # keeps the documented no-build-toolchain promise (round 3, F24).
+        # NOTE (round 4, R8): with realism active, scalar vs batch fitness
+        # differ by <=1e-9 summation noise, which can flip strict ties —
+        # the SAME seed may pick a different plan on a no-Cython host than
+        # on a Cython host. Per-host determinism holds; cross-host
+        # bit-parity is only guaranteed for the compiled path.
         global _BATCH_FALLBACK_WARNED
         if not _BATCH_FALLBACK_WARNED:
             logger.warning(

@@ -133,6 +133,10 @@ cdef i64 _decode_cstr_012_loop(
 ) noexcept nogil:
     """All-nogil inner driver — cstr modes 0/1/2."""
     cdef i64 n_bins = 0
+    # Scale-aware pallet-cap tolerance (round 5, R1 — mirrors Numba).
+    cdef double eps_w = 1e-9 * pallet_max_weight
+    if eps_w < 1e-6:
+        eps_w = 1e-6
     cdef i64 i, b, r, j, box_idx, n_rots
     cdef i64 dx, dy, dz
     cdef i64 idx, x, y, z, sc, yz, cand, BIG
@@ -153,7 +157,7 @@ cdef i64 _decode_cstr_012_loop(
 
         for b in range(n_bins):
             # Pre-check: pallet weight cap.
-            if pallet_weights[b] + cand_weight > pallet_max_weight + 1e-6:
+            if pallet_weights[b] + cand_weight > pallet_max_weight + eps_w:
                 continue
             bin_best_rot = -1
             bin_best_score = -1
@@ -302,7 +306,7 @@ cdef i64 _decode_cstr_012_loop(
             if n_bins >= MAX_BINS:
                 placements_out[i, 5] = 0
                 continue
-            if cand_weight > pallet_max_weight + 1e-6:
+            if cand_weight > pallet_max_weight + eps_w:
                 placements_out[i, 5] = 0
                 continue
             bin_emss[n_bins, 0, 0, 0] = 0
@@ -606,6 +610,10 @@ cdef i64 _decode_cstr_blocks_loop(
 ) noexcept nogil:
     """All-nogil cstr mode 4 inner driver."""
     cdef i64 n_bins = 0
+    # Scale-aware pallet-cap tolerance (round 5, R1 — mirrors Numba).
+    cdef double eps_w = 1e-9 * pallet_max_weight
+    if eps_w < 1e-6:
+        eps_w = 1e-6
     cdef i64 i, b, r, j, jj, box_idx, my_sku, n_rots, max_count
     cdef i64 dx, dy, dz
     cdef i64 idx, x, y, z, sc
@@ -634,7 +642,7 @@ cdef i64 _decode_cstr_blocks_loop(
         box_mlot = mlot[box_idx]
 
         # Single box alone exceeds pallet cap → mark unpacked and move on.
-        if box_weight > pallet_max_weight + 1e-6:
+        if box_weight > pallet_max_weight + eps_w:
             placements_out[i, 5] = 0
             placed[i] = 1
             sku_remaining[my_sku] -= 1
@@ -643,7 +651,7 @@ cdef i64 _decode_cstr_blocks_loop(
         block_committed = False
         for b in range(n_bins):
             # Pre-check: at least a single box must fit weight-wise.
-            if pallet_weights[b] + box_weight > pallet_max_weight + 1e-6:
+            if pallet_weights[b] + box_weight > pallet_max_weight + eps_w:
                 continue
             # Phase 1: DFTRC place single box.
             best_rot = -1
@@ -778,6 +786,10 @@ cdef i64 _decode_cstr_blocks_loop(
                         dx, dy, m * dz, transitive) > 0.0:
                     # Only the exact single-box path (m == 1, above) may
                     # carry inherited rider load — give up on this bin.
+                    # LOAD-BEARING GUARD (round 4, R8): the fallback checks
+                    # below omit inherited_blk while Phase 3 books it —
+                    # removing this "redundant" re-check reopens the F21
+                    # under-fill hole for the rider_free=False path.
                     continue
                 if not _ck_load_on_top(
                         placements_out, dims_all, bps_order, mlot,
@@ -1148,6 +1160,10 @@ cdef i64 _decode_cstr_layer_loop(
 ) noexcept nogil:
     """All-nogil cstr mode 3 inner driver."""
     cdef i64 n_bins = 0
+    # Scale-aware pallet-cap tolerance (round 5, R1 — mirrors Numba).
+    cdef double eps_w = 1e-9 * pallet_max_weight
+    if eps_w < 1e-6:
+        eps_w = 1e-6
     cdef i64 i, b, r, j, box_idx, n_rots
     cdef i64 dx, dy, dz
     cdef i64 idx, x, y, z, yz
@@ -1168,7 +1184,7 @@ cdef i64 _decode_cstr_layer_loop(
         placed = False
 
         for b in range(n_bins):
-            if pallet_weights[b] + cand_weight > pallet_max_weight + 1e-6:
+            if pallet_weights[b] + cand_weight > pallet_max_weight + eps_w:
                 continue
 
             # Phase 1: try current slab.
@@ -1393,7 +1409,7 @@ cdef i64 _decode_cstr_layer_loop(
         if n_bins >= MAX_BINS:
             placements_out[i, 5] = 0
             continue
-        if cand_weight > pallet_max_weight + 1e-6:
+        if cand_weight > pallet_max_weight + eps_w:
             placements_out[i, 5] = 0
             continue
         bin_emss[n_bins, 0, 0, 0] = 0

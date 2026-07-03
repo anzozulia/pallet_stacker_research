@@ -23,7 +23,16 @@ def to_json(result: PackResult, pallet: Pallet) -> dict:
         items_out = []
         for p in st.placements:
             sups = st._supporters_of(p)
-            supported_by = [s.box.id for s, _ in sups] if sups else ["floor"]
+            # Round 5 (R5): "floor" only for actual floor boxes. A z>0 box
+            # with no supporters (a residual floater in a plan served with
+            # warnings) reports [] — it used to claim ["floor"] while its
+            # own support_ratio said 0.0.
+            if sups:
+                supported_by = [s.box.id for s, _ in sups]
+            elif p.z <= EPS:
+                supported_by = ["floor"]
+            else:
+                supported_by = []
             supports = [
                 q.box.id for q in st.placements
                 if any(abs(q.z - p.z2) < EPS and
@@ -32,10 +41,18 @@ def to_json(result: PackResult, pallet: Pallet) -> dict:
                        for _ in [None])
             ]
             footprint = p.dx * p.dy
-            support_ratio = (
-                sum(a for _, a in sups) / footprint
-                if footprint > 0 and p.z > EPS else 1.0
-            )
+            if footprint > 0 and p.z > EPS:
+                support_ratio = sum(a for _, a in sups) / footprint
+            elif p.z <= EPS and pallet.max_overhang > 0 and footprint > 0:
+                # Round 5 (R5): under overhang a floor box may legally sit
+                # at partial deck contact — report the ACTUAL contact
+                # fraction (the quantity the engine/validator enforce)
+                # instead of a flattering hardcoded 1.0.
+                dcx = max(0.0, min(p.x2, float(pallet.length)) - max(p.x, 0.0))
+                dcy = max(0.0, min(p.y2, float(pallet.width)) - max(p.y, 0.0))
+                support_ratio = min(1.0, (dcx * dcy) / footprint)
+            else:
+                support_ratio = 1.0
             items_out.append({
                 "item_id": p.box.id,
                 "position": {"x": round(p.x, 3),

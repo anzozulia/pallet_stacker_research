@@ -12,8 +12,9 @@ stack instead of a weaker approximation, because postprocess.py uses this
 function as the safety gate for its geometry edits. Additions: per-box
 requires_full_support, centroid-over-supporter, zero-contact-is-floating
 (when stability semantics are active), and the CoG envelope for pallets
-with EXPLICIT cog ranges. Load bearing stays DIRECT-supporter (see the
-section-6 comment: the BRKGA decoders only guarantee the direct bound).
+with EXPLICIT cog ranges. Load bearing follows the config (round 2, F19):
+transitive accumulation when cfg.transitive_load_bearing, else the
+historical direct-supporter bound.
 
 Deliberate gating (so this stays no-stricter-than-the-engine for every
 caller):
@@ -89,7 +90,7 @@ def validate(result: PackResult, pallet: Pallet,
                     )
         # 3. Weight budget
         total = sum(p.box.weight for p in placements)
-        if total > pallet.max_weight + EPS:
+        if total > pallet.max_weight + load_tol(pallet.max_weight):
             errors.append(
                 f"{st.pallet_id}: total weight {total} > limit {pallet.max_weight}"
             )

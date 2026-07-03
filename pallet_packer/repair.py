@@ -94,6 +94,14 @@ def repair_load_violations(
     topmost one (max bottom z, ties by x, y, box id). Each iteration
     removes exactly one placement, so the loop is bounded by the number
     of placements.
+
+    Note (round 4, R8): the feeder set is always the TRANSITIVE upward
+    closure, even under the direct load model — so the topmost-first order
+    may strip a sibling tower's top before the box that actually feeds the
+    overload. Deliberate: topmost-first is the only order that can never
+    leave a box hovering, and determinism matters more than minimality
+    here. Only load (max_load_on_top) violations are repairable; weight-cap
+    or geometry violations are surfaced as warnings instead.
     """
     cfg = config or PackerConfig()
     transitive = bool(getattr(cfg, "transitive_load_bearing", False))
