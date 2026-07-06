@@ -60,6 +60,10 @@ def probe_decoder_modes(
                 sku_top_k_blocks=sku_top_k_blocks,
             )
             if res.pallets:
+                # NOTE (round 6): this probe scores pallet-0 util only —
+                # if the (default-OFF) adaptive selector is ever enabled
+                # for multi-pallet solves it should switch to the gated
+                # _fitness_pallet1 multibin objective (F31 / ADR D19).
                 used = sum(p.box.volume for p in res.pallets[0].placements)
                 util = used / cap if cap > 0 else 0.0
             else:

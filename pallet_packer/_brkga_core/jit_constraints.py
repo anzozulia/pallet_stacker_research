@@ -63,9 +63,14 @@ def _check_load_on_top_njit(
         historical unconditional-True path, bit-identical). The box must
         rest ON the deck: deck-contact area / footprint >= the effective
         support ratio — without this, overhang lets floor boxes sit fully
-        off the deck, floating in air (F17). No centroid-over-deck on
-        purpose: the v2 engine never applies the centroid rule at floor
-        level.
+        off the deck, floating in air (F17). When require_centroid: the
+        footprint centroid must also lie over the deck-contact rectangle
+        (round 6, F30) — a contact ratio below 0.5 can otherwise leave the
+        centre of mass past the deck edge, so the box tips over on
+        placement. Integer-doubled compare (2x+dx vs 2*x_hi) is exact; a
+        centroid EXACTLY on the deck edge is accepted, mirroring the
+        stacked centroid rule's boundary behaviour. Provably inert at
+        support_ratio >= 0.5 + 1e-6 (area ratio <= min per-axis ratio).
     Load check:
       - Distributes candidate weight across supporters in proportion to
         contact area; rejects if any supporter's running top-load + share
@@ -84,6 +89,13 @@ def _check_load_on_top_njit(
             footprint0 = float(cand_dx * cand_dy)
             if footprint0 > 0 and contact / footprint0 < eff_sr0 - 1e-6:
                 return False
+        # F30 (round 6): centroid must sit over the deck-contact rectangle
+        # or the box tips past the deck edge. Integer-exact; boundary
+        # (centroid ON the edge) accepts.
+        if require_centroid != 0 and (
+                2 * cand_x + cand_dx > 2 * x_hi
+                or 2 * cand_y + cand_dy > 2 * y_hi):
+            return False
         return True
     # Centroid coordinates (integer * 2 to keep math exact).
     cx2 = 2 * cand_x + cand_dx

@@ -13,14 +13,18 @@ output re-validated against an EXACT independent physics oracle:
   - AABB overlap, container bounds (one-sided overhang), height
   - support contact >= eff_sr * footprint at z>0 (and contact > 0)
   - floor deck-contact rule when overhang > 0 (F17)
+  - floor centroid-over-deck when overhang > 0 AND the config requires
+    centroid support (round 6, F30 — the toppling rule)
   - load bearing: DIRECT model when the transitive flag is off (the
     historical contract), TRANSITIVE physics when on (F19)
   - pallet weight cap
 
-Two sweeps (seeds fixed — these are the EXACT instances that exposed
+Three sweeps (seeds fixed — A/B are the EXACT instances that exposed
 F20/F21 pre-fix: 51/7200 and 23/7200 violating decodes):
   sweep A: mixed settings   (seed 20260703, 150 inst x 8 chrom x 6 modes)
   sweep B: service defaults (seed 777,      200 inst x 6 chrom x 6 modes)
+  sweep C: toppling regime  (seed 20260704, 120 inst x 6 chrom x 6 modes;
+           low sr + full overhang — the F30 family, round 6)
 plus the deterministic round-3 regression instances.
 
 PASS requires ZERO violations. Run (from repo root):
@@ -91,6 +95,40 @@ def rand_instance_mixed(rng: random.Random):
     return boxes, pallet, cfg, ov, sr, transitive, max_pallets
 
 
+def rand_instance_topple(rng: random.Random):
+    """Round 6 (F30): the toppling regime — low support_ratio + a big
+    overhang + require_centroid ON. Boxes are sized near or above the deck
+    so overhanging floor rows are forced; pre-fix this family shipped
+    validate-clean floor boxes with their centroid past the deck edge in
+    105/120 solves. NEW generator on purpose: the existing generators'
+    draw order is load-bearing and must not change."""
+    L = rng.choice([300, 400, 500])
+    W = rng.choice([300, 400, 500])
+    H = 1200
+    ov = min(L, W)
+    sr = rng.choice([0.0, 0.2, 0.3, 0.4])
+    transitive = rng.random() < 0.5
+    n = rng.randint(3, 10)
+    boxes = []
+    for i in range(n):
+        dl = rng.randint(int(L * 0.6), L)
+        dw = rng.randint(int(W * 0.6), W)
+        dh = rng.choice([100, 150, 200, 300])
+        w = rng.choice([0.0, 1.0, 5.0, 10.0, 20.0])
+        mlot = rng.choice([float("inf"), float("inf"), 0.0, 2.0 * max(w, 1.0)])
+        boxes.append(Box(id=f"b{i}", length=dl, width=dw, height=dh,
+                         weight=w, max_load_on_top=mlot,
+                         allowed_rotations=list(ALL_ROTATIONS),
+                         requires_full_support=False))
+    pallet = Pallet(length=L, width=W, height=H, max_overhang=float(ov))
+    cfg = PackerConfig(support_ratio=sr, require_centroid_supported=True,
+                       allow_pallet_overhang=True,
+                       enforce_load_bearing=True,
+                       transitive_load_bearing=transitive,
+                       seed=rng.randint(0, 10**6))
+    return boxes, pallet, cfg, ov, sr, transitive, 1
+
+
 def rand_instance_prod(rng: random.Random):
     L = rng.choice([800, 1000, 1200])
     W = rng.choice([600, 800, 1000])
@@ -133,8 +171,14 @@ def rand_instance_prod(rng: random.Random):
 # Exact physics oracle
 # ---------------------------------------------------------------------------
 
-def oracle(res, boxes, pallet, ov, sr, transitive):
-    """Return violation strings for one PackResult."""
+def oracle(res, boxes, pallet, ov, sr, transitive, require_centroid=False):
+    """Return violation strings for one PackResult.
+
+    require_centroid (round 6, F30): the floor centroid-over-deck rule is
+    gated on the config's require_centroid_supported — an rc=0 decode may
+    legally place an overhung floor box with its centroid past the deck
+    edge, so the criterion must NOT fire there (sweep A randomises rc).
+    """
     v = []
     L, W, H = pallet.length, pallet.width, pallet.height
     for pal in res.pallets:
@@ -165,6 +209,13 @@ def oracle(res, boxes, pallet, ov, sr, transitive):
                     v.append(f"DECK {b.id}")
                 if deck <= 0 and ov > 0:
                     v.append(f"OFF_DECK {b.id}")
+                # Round 6 (F30): footprint centroid over the deck-contact
+                # rectangle, else the box tips past the deck edge.
+                if ov > 0 and require_centroid and (
+                        x + dx / 2.0 > min(x + dx, L) + EPS_A
+                        or y + dy / 2.0 > min(y + dy, W) + EPS_A):
+                    v.append(f"FLOOR_TOPPLE {b.id} "
+                             f"com=({x + dx / 2.0},{y + dy / 2.0})")
             else:
                 sup = 0.0
                 for (x2, y2, z2, dx2, dy2, dz2, b2) in geo:
@@ -257,7 +308,8 @@ def run_sweep(name, gen, seed, n_instances, k_chroms, chrom_seed_base):
                         f"[{name} inst {inst} chrom {kc} mode {mode}] "
                         f"RAISED {type(e).__name__}: {e}")
                     continue
-                viol = oracle(res, boxes, pallet, ov, sr, transitive)
+                viol = oracle(res, boxes, pallet, ov, sr, transitive,
+                              require_centroid=cfg.require_centroid_supported)
                 if viol:
                     bad += 1
                     examples.append(
@@ -302,7 +354,8 @@ def run_regressions():
                     support_ratio=sr,
                     require_centroid=int(cfg.require_centroid_supported),
                     max_overhang=float(ov))
-                viol = oracle(res, boxes, pallet, ov, sr, transitive)
+                viol = oracle(res, boxes, pallet, ov, sr, transitive,
+                              require_centroid=cfg.require_centroid_supported)
                 if viol:
                     bad += 1
                     print(f"    REGRESSION {tag} chrom {kc} mode {mode}: "
@@ -366,6 +419,12 @@ def main():
     grand_total += t
     grand_bad += b
     t, b = run_sweep("B-prod", rand_instance_prod, 777, 200, 6, 1000)
+    grand_total += t
+    grand_bad += b
+    # Round 6 (F30): the toppling regime. Appended sweep — each sweep owns
+    # its own random.Random(seed) and default_rng(chrom_seed_base + inst),
+    # so adding it cannot perturb A/B.
+    t, b = run_sweep("C-topple", rand_instance_topple, 20260704, 120, 6, 2000)
     grand_total += t
     grand_bad += b
     print("=== deterministic round-3 regressions ===")

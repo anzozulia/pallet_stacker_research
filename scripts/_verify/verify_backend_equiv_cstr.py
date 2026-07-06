@@ -273,6 +273,8 @@ def main():
         "block_joint_rejections_seen": 0,
         "underfill_rejections_seen": 0,
         "epsilon_scale_seen": 0,
+        # Round-6 (F30) coverage — floor centroid-over-deck (toppling).
+        "floor_com_rejections_seen": 0,
         "z_gt0_seen": 0,      # instances where some box placed at z>0
         "rejections_seen": 0,  # instances where some box NOT placed (col5==0)
         "multibin": 0,         # instances using >1 bin
@@ -401,6 +403,10 @@ def main():
     print("=== Round-3 battery (block aggregation + under-fill + eps) ===")
     r3_fail = run_round3_battery(cov)
 
+    # ---- Round-6 battery (F30 floor centroid-over-deck / toppling) ----
+    print("=== Round-6 battery (floor toppling rule) ===")
+    r6_fail = run_round6_battery(cov)
+
     # ---- Targeted edge-case battery (deterministic, no RNG) ----
     print("=== Edge-case battery (extreme guard values) ===")
     edge_fail = run_edge_cases()
@@ -430,6 +436,8 @@ def main():
           f"{cov['block_joint_rejections_seen']} underfill_rejections_seen="
           f"{cov['underfill_rejections_seen']} epsilon_scale_seen="
           f"{cov['epsilon_scale_seen']}")
+    print(f"  ROUND-6 branch coverage: floor_com_rejections_seen="
+          f"{cov['floor_com_rejections_seen']}")
     print(f"  behaviour: z>0 placements seen={cov['z_gt0_seen']} "
           f"rejections(col5==0) seen={cov['rejections_seen']} "
           f"multibin seen={cov['multibin']}")
@@ -444,11 +452,12 @@ def main():
         print(f"  Worst mismatch: {worst[1]} with {worst[0]} differing rows @ {worst[2]}")
 
     overall_ok = (total_fail == 0) and (edge_fail == 0) and (eps_fail == 0) \
-        and (r2_fail == 0) and (r3_fail == 0) \
+        and (r2_fail == 0) and (r3_fail == 0) and (r6_fail == 0) \
         and cov["deck_rejections_seen"] > 0 and cov["transitive_chain_seen"] > 0 \
         and cov["block_joint_rejections_seen"] > 0 \
         and cov["underfill_rejections_seen"] > 0 \
-        and cov["epsilon_scale_seen"] > 0
+        and cov["epsilon_scale_seen"] > 0 \
+        and cov["floor_com_rejections_seen"] > 0
     grand = total_comp + 70 + eps_comp
     if cov["deck_rejections_seen"] == 0 or cov["transitive_chain_seen"] == 0:
         print("\n  !! ROUND-2 COVERAGE HOLE: a new branch never fired")
@@ -457,9 +466,12 @@ def main():
             or cov["epsilon_scale_seen"] == 0):
         print("\n  !! ROUND-3 COVERAGE HOLE: a fix's expected outcome never "
               "observed (running against a pre-round-3 core?)")
+    if cov["floor_com_rejections_seen"] == 0:
+        print("\n  !! ROUND-6 COVERAGE HOLE: the floor-CoM fix's expected "
+              "outcome never observed (running against a pre-round-6 core?)")
     print(f"\n=== RESULT: {'PASS' if overall_ok else 'FAIL'} "
           f"({grand} total comparisons; "
-          f"{total_fail + edge_fail + eps_fail + r2_fail + r3_fail} "
+          f"{total_fail + edge_fail + eps_fail + r2_fail + r3_fail + r6_fail} "
           f"total mismatches) ===")
     return 0 if overall_ok else 1
 
@@ -734,6 +746,125 @@ def run_round3_battery(cov):
           f"{cov['block_joint_rejections_seen']} case(s), under-fill fix in "
           f"{cov['underfill_rejections_seen']} case(s), scaled epsilon in "
           f"{cov['epsilon_scale_seen']} case(s)")
+    return fails
+
+
+def run_round6_battery(cov):
+    """Deterministic F30 cases (hardening round 6): the floor
+    centroid-over-deck (toppling) rule under overhang.
+
+    Like round 3 the fix is unconditional physics (gated only on
+    require_centroid), so each case encodes the physically-correct
+    POST-fix outcome the pre-fix code provably violated (105/120 engine
+    solves shipped a validate-clean toppling floor box at sr<0.5 —
+    docs/reports/39), and every case asserts cy == nb bit-identity.
+
+    Geometry (single-rotation, deck 400x400 inflated by overhang 400 to
+    an 800x800 container; pl=pw=400 raw deck; sr=0.25):
+      topple:   spacer 300-long at origin, then a 300x400 slab whose only
+                floor spot is x=300 -> contact ratio 1/3 >= 0.25 but
+                centroid 450 > 400: pre-fix placed toppling, post-fix
+                must NOT sit at a toppling floor spot.
+      boundary: spacer 200-long, slab 400-long at x=200 -> centroid
+                EXACTLY 400 == deck edge: must stay ACCEPTED (pins the
+                strict > comparison; a later >= "cleanup" fails here).
+      one-past: spacer 201-long, slab 400-long at x=201 -> centroid
+                400.5: one half-grid past the edge, must be rejected
+                from the floor.
+      rc=0:     the topple geometry with require_centroid=0 -> the
+                pre-fix placement is legal again (gate respected).
+    """
+    fails = 0
+
+    def ca_for(n, rc):
+        return {
+            "weights": np.full(n, 5.0, dtype=np.float64),
+            "mlot": np.full(n, _NO_LIMIT, dtype=np.float64),
+            "rfs": np.zeros(n, dtype=np.int64),
+            "pallet_max_weight": _NO_LIMIT,
+            "support_ratio": 0.25, "require_centroid": rc,
+            "cog_x_min": -_NO_LIMIT, "cog_x_max": _NO_LIMIT,
+            "cog_y_min": -_NO_LIMIT, "cog_y_max": _NO_LIMIT,
+            "cog_min_load_frac": 0.0, "cog_active": 0,
+        }
+
+    def single_rot(sizes):
+        n = len(sizes)
+        n_rots = np.full(n, 1, dtype=np.int64)
+        dims = np.zeros((n, 6, 3), dtype=np.int64)
+        for i, s in enumerate(sizes):
+            dims[i, 0] = s
+        return n_rots, dims
+
+    def decode_both(tag, sizes, rc):
+        # mode 2 on purpose: it is the placement scoring that actually
+        # picks the partially-overhanging floor spot (modes 0/1 skip it),
+        # verified pre-fix — the toppling branch provably fires here.
+        n = len(sizes)
+        n_rots, dims = single_rot(sizes)
+        order = np.arange(n, dtype=np.int64)
+        ca = ca_for(n, rc)
+        po_c, nbc = run_cstr_012(cy, order, n_rots, dims, 800, 800, 1200,
+                                 1, 2, ca, 400, 400, 0)
+        po_n, nbn = run_cstr_012(nb, order, n_rots, dims, 800, 800, 1200,
+                                 1, 2, ca, 400, 400, 0)
+        nonlocal fails
+        if not (np.array_equal(po_c, po_n) and nbc == nbn):
+            fails += 1
+            print(f"  FAIL round6-{tag}: cy != nb")
+        return po_c
+
+    def floor_com_ok(po, dims):
+        """True iff every placed floor row's centroid is over the deck."""
+        for i in range(po.shape[0]):
+            if po[i, 5] == 1 and po[i, 4] == 0:
+                if (2 * po[i, 2] + dims[i, 0, 0] > 2 * min(
+                        po[i, 2] + dims[i, 0, 0], 400)
+                        and po[i, 2] + dims[i, 0, 0] > 400):
+                    return False
+                if (2 * po[i, 3] + dims[i, 0, 1] > 2 * min(
+                        po[i, 3] + dims[i, 0, 1], 400)
+                        and po[i, 3] + dims[i, 0, 1] > 400):
+                    return False
+        return True
+
+    # topple: post-fix the slab may not occupy a toppling floor spot.
+    sizes = [(300, 400, 200), (300, 400, 200)]
+    po = decode_both("topple", sizes, rc=1)
+    _, dims = single_rot(sizes)
+    slab_on_floor_toppling = (po[1, 5] == 1 and po[1, 4] == 0
+                              and po[1, 2] + 300 > 400
+                              and 2 * po[1, 2] + 300 > 2 * 400)
+    if floor_com_ok(po, dims) and not slab_on_floor_toppling:
+        cov["floor_com_rejections_seen"] += 1
+    else:
+        print(f"  round6-topple: slab row={po[1].tolist()} "
+              f"(pre-fix behavior: floor spot x=300, centroid 450)")
+
+    # boundary: centroid exactly ON the deck edge stays accepted.
+    po = decode_both("boundary", [(200, 400, 200), (400, 400, 200)], rc=1)
+    if not (po[1, 5] == 1 and po[1, 4] == 0 and po[1, 2] == 200):
+        fails += 1     # rejecting the boundary would be a REAL regression
+        print(f"  FAIL round6-boundary: slab row={po[1].tolist()} "
+              f"(centroid==edge must stay accepted)")
+
+    # one-past: centroid a half-grid past the edge must leave the floor.
+    po = decode_both("one-past", [(201, 400, 200), (400, 400, 200)], rc=1)
+    if po[1, 5] == 1 and po[1, 4] == 0 and po[1, 2] == 201:
+        fails += 1
+        print("  FAIL round6-one-past: toppling floor spot accepted")
+    else:
+        cov["floor_com_rejections_seen"] += 1
+
+    # rc=0: gate respected — the pre-fix placement is legal again.
+    po = decode_both("rc0", [(300, 400, 200), (300, 400, 200)], rc=0)
+    if not (po[1, 5] == 1 and po[1, 4] == 0 and po[1, 2] == 300):
+        fails += 1
+        print(f"  FAIL round6-rc0: slab row={po[1].tolist()} "
+              f"(require_centroid=0 must keep the historical placement)")
+
+    print(f"  round6 battery: {fails} mismatches; floor-CoM fix observed "
+          f"in {cov['floor_com_rejections_seen']} case(s)")
     return fails
 
 

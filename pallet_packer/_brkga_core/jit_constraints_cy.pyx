@@ -76,7 +76,9 @@ cdef bint _ck_load_on_top(
     return True immediately UNLESS pallet_l > 0 (the raw deck dims, passed
     only when overhang inflates the container bounds): then the box must
     rest ON the deck — deck-contact area >= the effective support ratio
-    (F17; mirrors the Numba reference).
+    (F17) — and, when require_centroid, its footprint centroid must lie
+    over the deck-contact rectangle (round 6, F30: integer-doubled compare,
+    exact; centroid ON the edge accepts; mirrors the Numba reference).
     pending_loads (round 3, F20): the block sibling-column overlay — all
     zero from every non-block caller; the load compare reads
     placement_top_loads[i] + pending_loads[i].
@@ -97,6 +99,13 @@ cdef bint _ck_load_on_top(
             footprint0 = <double>(cand_dx * cand_dy)
             if footprint0 > 0 and contact / footprint0 < eff_sr0 - 1e-6:
                 return False
+        # F30 (round 6): centroid must sit over the deck-contact rectangle
+        # or the box tips past the deck edge. Integer-exact; boundary
+        # (centroid ON the edge) accepts.
+        if require_centroid != 0 and (
+                2 * cand_x + cand_dx > 2 * x_hi0
+                or 2 * cand_y + cand_dy > 2 * y_hi0):
+            return False
         return True
     cdef i64 cx2 = 2 * cand_x + cand_dx
     cdef i64 cy2 = 2 * cand_y + cand_dy

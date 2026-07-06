@@ -46,6 +46,14 @@ comparisons — so both paths compute the SAME formulas from the SAME integer
 dims_all table (never Placement.dims floats). Exact bit-identity is not
 attainable (different summation trees); the divergence is bounded well under
 1e-12, six orders below the acceptance band. Guarded by a parity test.
+
+Round 6 (F31): under the multi-bin objective (max_pallets != 1) both paths
+score ALL pallets (all_pallets=True) and the fitness applies eps HALVED so
+realism can never flip a pallet-count decision (see _fitness_pallet1 and
+ADR D19). Caveat for non-integer-dim library callers: the multibin beta
+derives from float box.volume in the scalar path vs the int dims_all table
+in the batch path — the rounding delta can shave the eps_mb <= 0.5*beta
+margin; bounded, comparative-only, impossible for gated (integer) inputs.
 """
 from __future__ import annotations
 
@@ -191,16 +199,23 @@ def _terms(z: np.ndarray, dz: np.ndarray, vols: np.ndarray, w: np.ndarray,
     return _W_HM * hm + _W_MH * mh + _W_OI * oi
 
 
-def realism_scalar(result, ctx: RealismContext) -> float:
-    """R for a PackResult (pallet 0 only, matching _fitness_pallet1's scope).
+def realism_scalar(result, ctx: RealismContext, *,
+                   all_pallets: bool = False) -> float:
+    """R for a PackResult (pallet 0 only by default, matching
+    _fitness_pallet1's single-pallet scope; all_pallets=True aggregates
+    every pallet — the round-6 multi-bin objective. z is pallet-local, so
+    the global formulas stay meaningful: HM = mass-weighted mean
+    normalized height of the whole shipment, MH = worst pallet's
+    silhouette, OI = shipment-wide orientation consistency).
 
     Dims come from the integer dims_all table via box.id lookup — NOT from
     Placement.dims floats — to stay in lockstep with the batch path.
     """
     if not result.pallets:
         return 0.0
+    pallets = result.pallets if all_pallets else result.pallets[:1]
     z_l, dz_l, vol_l, w_l, sku_l, var_l = [], [], [], [], [], []
-    for p in result.pallets[0].placements:
+    for p in (q for st in pallets for q in st.placements):
         i = ctx.index_by_id.get(str(p.box.id))
         if i is None:
             # Unknown box (shouldn't happen: ids are unique per the input
@@ -227,12 +242,17 @@ def realism_scalar(result, ctx: RealismContext) -> float:
 
 
 def realism_batch(placements_out_all: np.ndarray, orders: np.ndarray,
-                  ctx: RealismContext) -> np.ndarray:
+                  ctx: RealismContext, *,
+                  all_pallets: bool = False) -> np.ndarray:
     """R for a whole decoded population, vectorised. Same formulas as
-    realism_scalar; parity guarded by tests at |delta| < 1e-12."""
+    realism_scalar; parity guarded by tests at |delta| < 1e-12.
+    all_pallets=True drops the pallet-0 mask (round-6 multi-bin)."""
     pop, n = placements_out_all.shape[0], placements_out_all.shape[1]
-    mask = ((placements_out_all[:, :, 5] == 1)
-            & (placements_out_all[:, :, 0] == 0))
+    if all_pallets:
+        mask = placements_out_all[:, :, 5] == 1
+    else:
+        mask = ((placements_out_all[:, :, 5] == 1)
+                & (placements_out_all[:, :, 0] == 0))
     rot_idx = placements_out_all[:, :, 1]
     sel = ctx.dims_all[orders, rot_idx].astype(np.float64)   # (pop, n, 3)
     vols = sel[:, :, 0] * sel[:, :, 1] * sel[:, :, 2]

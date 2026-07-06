@@ -11,10 +11,12 @@ Hardened (2026-07, hardening plan A2) to mirror the ENGINE's feasibility
 stack instead of a weaker approximation, because postprocess.py uses this
 function as the safety gate for its geometry edits. Additions: per-box
 requires_full_support, centroid-over-supporter, zero-contact-is-floating
-(when stability semantics are active), and the CoG envelope for pallets
-with EXPLICIT cog ranges. Load bearing follows the config (round 2, F19):
-transitive accumulation when cfg.transitive_load_bearing, else the
-historical direct-supporter bound.
+(when stability semantics are active), the CoG envelope for pallets
+with EXPLICIT cog ranges, and (round 6, F30) the floor centroid-over-deck
+rule under overhang — mirroring the engines' toppling gate, active only
+when cfg.require_centroid_supported. Load bearing follows the config
+(round 2, F19): transitive accumulation when cfg.transitive_load_bearing,
+else the historical direct-supporter bound.
 
 Deliberate gating (so this stays no-stricter-than-the-engine for every
 caller):
@@ -113,8 +115,10 @@ def validate(result: PackResult, pallet: Pallet,
                 if not stability_active:
                     continue      # pure-geometric mode (BR): floats allowed
                 fp = p.dx * p.dy
-                dxc = min(p.x2, float(pallet.length)) - max(p.x, 0.0)
-                dyc = min(p.y2, float(pallet.width)) - max(p.y, 0.0)
+                x_hi = min(p.x2, float(pallet.length))
+                y_hi = min(p.y2, float(pallet.width))
+                dxc = x_hi - max(p.x, 0.0)
+                dyc = y_hi - max(p.y, 0.0)
                 contact = dxc * dyc if (dxc > 0 and dyc > 0) else 0.0
                 min_support = (1.0 if p.box.requires_full_support
                                else cfg.support_ratio)
@@ -126,6 +130,18 @@ def validate(result: PackResult, pallet: Pallet,
                         f"only {contact / fp if fp > 0 else 0.0:.0%} deck "
                         f"contact (min {min_support:.0%})"
                     )
+                # F30 (round 6): centroid over the deck-contact rectangle,
+                # mirroring the engines — a floor box whose centre of mass
+                # projects past the deck edge tips over on placement.
+                if cfg.require_centroid_supported:
+                    cx = p.x + p.dx / 2.0
+                    cy = p.y + p.dy / 2.0
+                    if cx > x_hi + EPS or cy > y_hi + EPS:
+                        errors.append(
+                            f"{st.pallet_id}: {p.box.id} floor centroid "
+                            f"({cx},{cy}) hangs past the deck edge under "
+                            f"overhang — the box would topple"
+                        )
                 continue
             stability_active = (cfg.support_ratio > 0.0
                                 or cfg.require_centroid_supported

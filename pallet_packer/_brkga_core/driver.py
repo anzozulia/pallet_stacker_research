@@ -165,7 +165,14 @@ def _brkga_pack_v35_impl(
             use_smart_init=use_smart_init, use_local_search=use_local_search,
             local_search_budget_s=local_search_budget_s, use_lns=use_lns,
             lns_budget_s=lns_budget_s,
-            use_v2_hybrid_polish=use_v2_hybrid_polish, verbose=verbose)
+            use_v2_hybrid_polish=use_v2_hybrid_polish, verbose=verbose,
+            generations=generations, elite_fraction=elite_fraction,
+            mutant_fraction=mutant_fraction, p_elite_inherit=p_elite_inherit,
+            migration_interval=migration_interval,
+            migrants_per_swap=migrants_per_swap,
+            use_sku_aware=use_sku_aware, sku_aware_budget_s=sku_aware_budget_s,
+            use_adaptive_mode_selector=use_adaptive_mode_selector,
+            adaptive_probe_seeds=adaptive_probe_seeds)
     # Resolve the use_v2_seed auto-default before any branch. v2 seed gives
     # a feasible-and-anchored baseline that's worth its slow runtime on
     # constrained workloads but actively traps BRKGA in a suboptimal basin
@@ -217,8 +224,12 @@ def _brkga_pack_v35_impl(
             util = used / cap if cap > 0 else 0.0
             if verbose:
                 print(f"  [v3.5 multi-restart] run {r_idx+1}/{n_restarts}: util={util*100:.2f}%")
-            if restart_ctx is not None:
-                fit = _fitness_pallet1(res, pallet, realism=restart_ctx)
+            if restart_ctx is not None or max_pallets != 1:
+                # Round 6 (F31): multi-bin restarts must be compared with
+                # the multi-bin objective even with realism off — the raw
+                # pallets[0]-util leg below is blind past the first pallet.
+                fit = _fitness_pallet1(res, pallet, realism=restart_ctx,
+                                       max_pallets=max_pallets)
                 if fit < best_restart_fit - 1e-9:
                     best_restart_fit = fit
                     best_util = util
@@ -447,7 +458,8 @@ def _brkga_pack_v35_impl(
         )
         sku_aware_time = time.time() - t_sku
         if verbose and sku_aware_result is not None:
-            sku_u = (1 - _fitness_pallet1(sku_aware_result, pallet)) * 100
+            sku_u = (1 - _fitness_pallet1(sku_aware_result, pallet,
+                                          max_pallets=max_pallets)) * 100
             print(f"  [v3.5] SKU-aware: util={sku_u:.2f}% in {sku_aware_time:.2f}s "
                   f"({sku_aware_decodes} decodes)")
 
@@ -500,7 +512,7 @@ def _brkga_pack_v35_impl(
     best_chrom: Optional[np.ndarray] = None
     # If SKU-aware found a result, seed best with it
     if sku_aware_result is not None and sku_aware_chrom is not None:
-        sku_fit = _fitness_pallet1(sku_aware_result, pallet,
+        sku_fit = _fitness_pallet1(sku_aware_result, pallet, max_pallets=max_pallets,
                                    realism=realism_ctx)
         best_fitness = float(sku_fit)
         best_result = sku_aware_result
@@ -673,7 +685,8 @@ def _brkga_pack_v35_impl(
             seed=seed + 999, verbose=verbose,
             realism=realism_ctx,
         )
-        ls_fit = _fitness_pallet1(ls_res, pallet, realism=realism_ctx)
+        ls_fit = _fitness_pallet1(ls_res, pallet, realism=realism_ctx,
+                                  max_pallets=max_pallets)
         if ls_fit < best_fitness - 1e-9:
             best_fitness = ls_fit
             best_result = ls_res
@@ -708,7 +721,8 @@ def _brkga_pack_v35_impl(
             seed=seed + 1234, verbose=verbose,
             realism=realism_ctx,
         )
-        lns_fit = _fitness_pallet1(lns_res, pallet, realism=realism_ctx)
+        lns_fit = _fitness_pallet1(lns_res, pallet, realism=realism_ctx,
+                                   max_pallets=max_pallets)
         if lns_fit < best_fitness - 1e-9:
             best_fitness = lns_fit
             best_result = lns_res
@@ -720,7 +734,8 @@ def _brkga_pack_v35_impl(
     # Phase 4: Compare with v2 hybrid (if enabled)
     # ----------------------------------------------------------------------
     if use_v2_hybrid_polish and v2_result is not None and v2_result.pallets:
-        v2_fit = _fitness_pallet1(v2_result, pallet, realism=realism_ctx)
+        v2_fit = _fitness_pallet1(v2_result, pallet, realism=realism_ctx,
+                                  max_pallets=max_pallets)
         if v2_fit < best_fitness - 1e-9:
             if verbose:
                 print(f"  [v3.5] v2 hybrid wins: util={(1-v2_fit)*100:.2f}%")
@@ -754,6 +769,22 @@ def _pack_with_groups(
     lns_budget_s: float,
     use_v2_hybrid_polish: bool,
     verbose: bool,
+    # Round 6: previously these were silently DROPPED for group solves —
+    # a library caller tuning e.g. generations or elite_fraction had them
+    # ignored whenever any group was present. Forwarded verbatim now
+    # (defaults identical to _brkga_pack_v35_impl's, so untuned callers
+    # are bit-identical). n_restarts/validate_input stay per-pallet
+    # internal (1 restart per pallet; input already validated up front).
+    generations: int = 1000,
+    elite_fraction: float = 0.20,
+    mutant_fraction: float = 0.15,
+    p_elite_inherit: float = 0.70,
+    migration_interval: int = 15,
+    migrants_per_swap: int = 3,
+    use_sku_aware: bool = False,
+    sku_aware_budget_s: float = 5.0,
+    use_adaptive_mode_selector: bool = False,
+    adaptive_probe_seeds: int = 4,
 ) -> PackResult:
     """Pack with the Box.group co-location constraint guaranteed.
 
@@ -864,6 +895,14 @@ def _pack_with_groups(
             local_search_budget_s=local_search_budget_s, use_lns=use_lns,
             lns_budget_s=lns_budget_s,
             use_v2_hybrid_polish=use_v2_hybrid_polish, verbose=verbose,
+            generations=generations, elite_fraction=elite_fraction,
+            mutant_fraction=mutant_fraction, p_elite_inherit=p_elite_inherit,
+            migration_interval=migration_interval,
+            migrants_per_swap=migrants_per_swap,
+            use_sku_aware=use_sku_aware,
+            sku_aware_budget_s=sku_aware_budget_s,
+            use_adaptive_mode_selector=use_adaptive_mode_selector,
+            adaptive_probe_seeds=adaptive_probe_seeds,
         )
         out_pallets.extend(res.pallets)
         out_unpacked.extend(res.unpacked)

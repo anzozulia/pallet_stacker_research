@@ -110,7 +110,8 @@ def local_search_2opt(
             max_overhang=max_overhang)
     res = decoder(current, boxes, pallet, config, n_rots_arr, dims_all,
                   max_pallets=max_pallets)
-    best_fit = _fitness_pallet1(res, pallet, realism=realism)
+    best_fit = _fitness_pallet1(res, pallet, realism=realism,
+                                max_pallets=max_pallets)
     rng = np.random.default_rng(seed)
     t0 = time.time()
     moves = 0
@@ -263,7 +264,8 @@ def local_search_2opt(
                 continue
         cand_res = decoder(candidate, boxes, pallet, config,
                            n_rots_arr, dims_all, max_pallets=max_pallets)
-        cand_fit = _fitness_pallet1(cand_res, pallet, realism=realism)
+        cand_fit = _fitness_pallet1(cand_res, pallet, realism=realism,
+                                    max_pallets=max_pallets)
         moves += 1
         if cand_fit < best_fit - 1e-9:
             best_fit = cand_fit
@@ -352,7 +354,8 @@ def path_relinking(
     n = len(boxes)
     res_a = decoder(chrom_a, boxes, pallet, config, n_rots_arr, dims_all,
                     max_pallets=max_pallets)
-    fit_a = _fitness_pallet1(res_a, pallet, realism=realism)
+    fit_a = _fitness_pallet1(res_a, pallet, realism=realism,
+                             max_pallets=max_pallets)
     # Identify positions where the two chromosomes differ significantly
     diffs = np.where(np.abs(chrom_a - chrom_b) > 1e-6)[0]
     if len(diffs) == 0:
@@ -372,7 +375,8 @@ def path_relinking(
             current[diffs[i]] = chrom_b[diffs[i]]
         cand_res = decoder(current, boxes, pallet, config, n_rots_arr, dims_all,
                             max_pallets=max_pallets)
-        cand_fit = _fitness_pallet1(cand_res, pallet, realism=realism)
+        cand_fit = _fitness_pallet1(cand_res, pallet, realism=realism,
+                                    max_pallets=max_pallets)
         if cand_fit < best_fit - 1e-9:
             best_fit = cand_fit
             best = current.copy()
@@ -465,7 +469,8 @@ def lns_polish(
     current = best_chrom.copy()
     res = decoder(current, boxes, pallet, config, n_rots_arr, dims_all,
                   max_pallets=max_pallets)
-    best_fit = _fitness_pallet1(res, pallet, realism=realism)
+    best_fit = _fitness_pallet1(res, pallet, realism=realism,
+                                max_pallets=max_pallets)
     best_res = res
     rng = np.random.default_rng(seed)
     t0 = time.time()
@@ -480,7 +485,8 @@ def lns_polish(
             cand[idx] = rng.random()
         cand_res = decoder(cand, boxes, pallet, config, n_rots_arr, dims_all,
                            max_pallets=max_pallets)
-        cand_fit = _fitness_pallet1(cand_res, pallet, realism=realism)
+        cand_fit = _fitness_pallet1(cand_res, pallet, realism=realism,
+                                    max_pallets=max_pallets)
         iters += 1
         if cand_fit < best_fit - 1e-9:
             best_fit = cand_fit

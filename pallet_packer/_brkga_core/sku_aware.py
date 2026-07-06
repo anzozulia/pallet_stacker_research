@@ -169,7 +169,8 @@ def brkga_sku_aware_search(
                 n_rots_arr, dims_all, mode=4,
                 max_pallets=max_pallets, sku_id_per_box=sku_id_per_box,
             )
-            fits[i] = _fitness_pallet1(res, pallet, realism=realism)
+            fits[i] = _fitness_pallet1(res, pallet, realism=realism,
+                                       max_pallets=max_pallets)
             total_decodes += 1
             if fits[i] < best_fit - 1e-9:
                 best_fit = float(fits[i])

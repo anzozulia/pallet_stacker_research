@@ -291,8 +291,10 @@ class PalletState:
             # floor box sit fully off the deck, floating in air. Inert when
             # overhang is off (every floor box is then 100% on the deck).
             footprint = cand.dx * cand.dy
-            deck_x = min(cand.x2, float(self.pallet.length)) - max(cand.x, 0.0)
-            deck_y = min(cand.y2, float(self.pallet.width)) - max(cand.y, 0.0)
+            x_hi = min(cand.x2, float(self.pallet.length))
+            y_hi = min(cand.y2, float(self.pallet.width))
+            deck_x = x_hi - max(cand.x, 0.0)
+            deck_y = y_hi - max(cand.y, 0.0)
             contact = deck_x * deck_y if (deck_x > 0 and deck_y > 0) else 0.0
             if contact <= EPS:
                 return False
@@ -300,6 +302,15 @@ class PalletState:
             if min_support > 0.0 and (
                     footprint <= 0 or contact / footprint < min_support - EPS):
                 return False
+            # F30 (round 6): the footprint centroid must sit over the
+            # deck-contact rectangle, else the box tips past the deck edge
+            # (a contact ratio < 0.5 no longer implies centroid-on-deck).
+            # Same gate as the stacked centroid rule; boundary (centroid
+            # exactly on the edge) accepts.
+            if self.config.require_centroid_supported:
+                if (cand.x + cand.dx / 2.0 > x_hi + EPS
+                        or cand.y + cand.dy / 2.0 > y_hi + EPS):
+                    return False
         # 4. Load bearing (incl. F21: load inherited by under-filling
         #    beneath already-placed boxes — the candidate becomes their
         #    supporter and must be able to carry its share, and that share

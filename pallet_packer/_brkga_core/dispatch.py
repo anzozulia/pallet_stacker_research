@@ -483,23 +483,51 @@ def _compute_fitness_pallet1_batch(
     dims_all: np.ndarray,              # (n_boxes, n_rots_max, 3)
     pallet: Pallet,
     realism=None,
+    max_pallets: int = 1,
+    n_bins_all: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Vectorised _fitness_pallet1 over a batch of decode results.
 
-    fits[i] = 1 - vol_on_pallet0 / pallet_capacity  (lower is better),
-    plus the epsilon-scaled realism term when a RealismContext is given
-    (realism=None keeps the historical value bit-identical).
+    max_pallets == 1 (default): fits[i] = 1 - vol_on_pallet0 / capacity
+    (lower is better), plus the epsilon-scaled realism term when a
+    RealismContext is given (realism=None keeps the historical value
+    bit-identical).
+
+    max_pallets != 1 (round 6, F31): the multi-bin objective —
+    v_unp/cap + beta*n_used (+ 0.5*eps*R over ALL pallets); mirrors
+    _fitness_pallet1's multibin branch, see its docstring / ADR D19.
+    n_bins_all is the decoders' own per-chromosome bin count (they never
+    emit empty bins, so it equals the scalar path's non-empty pallet
+    count); when None it is recovered from column 0.
     """
     cap = float(pallet.length * pallet.width * pallet.height)
     if cap <= 0.0:
         return np.ones(placements_out_all.shape[0], dtype=np.float64)
     placed = placements_out_all[:, :, 5] == 1
-    on_pallet_0 = placements_out_all[:, :, 0] == 0
-    mask = placed & on_pallet_0
     rot_idx = placements_out_all[:, :, 1]
     # Fancy-index dims_all: (pop_size, n, 3)
     selected_dims = dims_all[orders, rot_idx]
     vols = selected_dims[:, :, 0] * selected_dims[:, :, 1] * selected_dims[:, :, 2]
+    if max_pallets != 1:
+        n = placements_out_all.shape[1]
+        v_unp = (vols * ~placed).sum(axis=1).astype(np.float64)
+        if n_bins_all is not None:
+            n_used = n_bins_all.astype(np.float64)
+        else:
+            n_used = np.where(placed, placements_out_all[:, :, 0] + 1, 0
+                              ).max(axis=1).astype(np.float64) if n else \
+                np.zeros(placements_out_all.shape[0])
+        min_vol = float((dims_all[:, 0, 0].astype(np.float64)
+                         * dims_all[:, 0, 1] * dims_all[:, 0, 2]).min())
+        beta = 0.5 * min_vol / cap
+        fits = v_unp / cap + beta * n_used
+        if realism is not None:
+            from .realism import realism_batch
+            fits = fits + (0.5 * realism.eps) * realism_batch(
+                placements_out_all, orders, realism, all_pallets=True)
+        return fits
+    on_pallet_0 = placements_out_all[:, :, 0] == 0
+    mask = placed & on_pallet_0
     used = (vols * mask).sum(axis=1).astype(np.float64)
     fits = 1.0 - used / cap
     if realism is not None:
@@ -545,9 +573,12 @@ def decode_population_fitness(
     Math is bit-identical to:
         for i in range(pop_size):
             res = decode_chromosome(population[i], ...)
-            fits[i] = _fitness_pallet1(res, pallet, realism=realism)
+            fits[i] = _fitness_pallet1(res, pallet, realism=realism,
+                                       max_pallets=max_pallets)
     (up to summation-order float noise well under the 1e-9 acceptance band
-    when realism is active; exactly identical when realism=None).
+    when realism is active; exactly identical when realism=None and
+    max_pallets == 1 — the multibin branch shares the same integer-derived
+    volumes but sums in a different order).
     """
     pop_size = population.shape[0]
     n = len(boxes)
@@ -624,7 +655,8 @@ def decode_population_fitness(
                 cog_y_min=cog_y_min, cog_y_max=cog_y_max,
                 cog_min_load_frac=cog_min_load_frac, cog_active=cog_active,
                 max_overhang=max_overhang)
-            fits[i] = _fitness_pallet1(res, pallet, realism=realism)
+            fits[i] = _fitness_pallet1(res, pallet, realism=realism,
+                                       max_pallets=max_pallets)
         return fits
 
     # Allocate the per-chromosome output buffers up front. All mode groups
@@ -661,7 +693,8 @@ def decode_population_fitness(
         n_bins_out_all[idx] = nb_m
 
     return _compute_fitness_pallet1_batch(
-        placements_out_all, orders, dims_all, pallet, realism=realism)
+        placements_out_all, orders, dims_all, pallet, realism=realism,
+        max_pallets=max_pallets, n_bins_all=n_bins_out_all)
 
 
 def _decode_mode_batch(

@@ -389,13 +389,54 @@ def decode_chromosome_fast(
 
 
 def _fitness_pallet1(result: PackResult, pallet: Pallet,
-                     realism=None) -> float:
-    """Lower = better. For max_pallets=1: minimize 1 - util_pallet1.
+                     realism=None, max_pallets: int = 1) -> float:
+    """Lower = better. For max_pallets == 1: minimize 1 - util_pallet1
+    (the exact historical formula, byte-for-byte — goldens/BR depend on
+    it). With a RealismContext (see _brkga_core.realism) the
+    epsilon-scaled secondary term is added: base + eps * R. realism=None
+    keeps the historical value bit-identical.
 
-    With a RealismContext (see _brkga_core.realism) the epsilon-scaled
-    secondary term is added: base + eps * R. realism=None keeps the
-    historical value bit-identical."""
+    max_pallets != 1 (round 6, F31 — includes the library max_pallets<=0
+    "auto/32 bins" mode): the historical pallet-0-only base made the
+    search blind past the first pallet (packing 10 boxes on pallet 1
+    scored IDENTICALLY to dropping them). Multi-bin objective, strict
+    dominance hierarchy (ADR D19):
+
+        v_unp/cap  +  beta * n_used  [+ 0.5*eps * R_over_all_pallets]
+
+    with beta = 0.5 * min_box_volume / cap. Packing any box — even on a
+    NEW pallet — improves fitness by >= 0.5*beta (any volume >= min_vol
+    = 2*beta*cap and |realism| < 0.5*beta), so boxes are never sacrificed
+    to save pallets; fewer pallets win at equal packed volume; realism is
+    a pure tiebreak (halved at APPLY time — at realism_weight=1 the
+    unhalved ctx.eps equals beta exactly and could flip a pallet-count
+    decision). Terms clear the 1e-9 acceptance band only when
+    min_vol/cap > 4e-9 — same degenerate dust class the realism layer
+    already disables for (realism._MIN_EPS).
+
+    NOTE for hand-built results: beta derives from the result's OWN box
+    multiset (placed + unpacked — conservation makes it a per-solve
+    constant), so candidates compared against each other must carry the
+    same box set.
+    """
     cap = pallet.length * pallet.width * pallet.height
+    if max_pallets != 1:
+        if cap <= 0:
+            return 1.0
+        v_unp = sum(b.volume for b in result.unpacked)
+        n_used = sum(1 for st in result.pallets if st.placements)
+        all_vols = ([p.box.volume for st in result.pallets
+                     for p in st.placements]
+                    + [b.volume for b in result.unpacked])
+        if not all_vols:
+            return 0.0
+        beta = 0.5 * min(all_vols) / cap
+        base = v_unp / cap + beta * n_used
+        if realism is None:
+            return base
+        from ._brkga_core.realism import realism_scalar
+        return base + (0.5 * realism.eps) * realism_scalar(
+            result, realism, all_pallets=True)
     if not result.pallets:
         base = 1.0
     else:
@@ -467,7 +508,8 @@ def brkga_pack_fast(
                     pops[k][i], boxes, pallet, config,
                     n_rots_arr, dims_all, max_pallets=max_pallets,
                 )
-                fits[i] = _fitness_pallet1(res, pallet)
+                fits[i] = _fitness_pallet1(res, pallet,
+                                           max_pallets=max_pallets)
                 total_decodes += 1
                 if fits[i] < best_fitness - 1e-9:
                     best_fitness = float(fits[i])

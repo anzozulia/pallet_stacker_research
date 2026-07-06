@@ -35,13 +35,17 @@ def to_json(result: PackResult, pallet: Pallet) -> dict:
                 supported_by = []
             supports = [
                 q.box.id for q in st.placements
-                if any(abs(q.z - p.z2) < EPS and
-                       max(0, min(q.x2, p.x2) - max(q.x, p.x)) *
-                       max(0, min(q.y2, p.y2) - max(q.y, p.y)) > EPS
-                       for _ in [None])
+                if q is not p and abs(q.z - p.z2) < EPS and
+                max(0, min(q.x2, p.x2) - max(q.x, p.x)) *
+                max(0, min(q.y2, p.y2) - max(q.y, p.y)) > EPS
             ]
             footprint = p.dx * p.dy
             if footprint > 0 and p.z > EPS:
+                # NOTE: on a plan served WITH warnings (degraded geometry —
+                # e.g. overlapping supporters the engine should never
+                # produce), the double-counted contact can push this above
+                # 1.0. Reported honestly rather than clamped; see the
+                # support_ratio field description in the API schema.
                 support_ratio = sum(a for _, a in sups) / footprint
             elif p.z <= EPS and pallet.max_overhang > 0 and footprint > 0:
                 # Round 5 (R5): under overhang a floor box may legally sit
