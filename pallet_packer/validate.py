@@ -14,9 +14,13 @@ requires_full_support, centroid-over-supporter, zero-contact-is-floating
 (when stability semantics are active), the CoG envelope for pallets
 with EXPLICIT cog ranges, and (round 6, F30) the floor centroid-over-deck
 rule under overhang — mirroring the engines' toppling gate, active only
-when cfg.require_centroid_supported. Load bearing follows the config
-(round 2, F19): transitive accumulation when cfg.transitive_load_bearing,
-else the historical direct-supporter bound.
+when cfg.require_centroid_supported. Round 8, F36 generalises F30 from a
+single floor box to a connected sub-ASSEMBLY: under overhang each rigid
+assembly's weighted CoG must project within the convex hull of its own
+deck-contact region, else the stack topples even though every per-box
+check and the whole-pallet CoG envelope pass. Load bearing follows the
+config (round 2, F19): transitive accumulation when
+cfg.transitive_load_bearing, else the historical direct-supporter bound.
 
 Deliberate gating (so this stays no-stricter-than-the-engine for every
 caller):
@@ -32,9 +36,22 @@ caller):
     checked for the config-fraction default on a purely geometric (no
     overhang) packing: the geometric decoder path never enforces it, so
     validating it there would reject engine-legal geometric packings.
+    (round 8, F37) It is also skipped for a single-placement pallet: the
+    engines never CoG-check the first box on a pallet (v2 _cog_ok returns
+    True when `not self.placements`; the JIT new-bin path commits the seed
+    box with no envelope check), so flagging a lone corner box would reject
+    an engine-legal placement.
+  * The per-assembly toppling check (round 8, F36) applies only under
+    overhang with cfg.require_centroid_supported — exactly F30's gate. It is
+    provably inert without overhang: a floor box's deck-contact rectangle is
+    then its full footprint, so the per-box centroid-over-supporter rule
+    inductively keeps every assembly's weighted CoG inside its deck-contact
+    hull. Assemblies are joined by the VERTICAL resting-on relation only —
+    two stacks touching at a side face brace nothing against tipping.
 """
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional, Tuple
 
 from .models import EPS, load_tol, Pallet, PackerConfig, Placement
@@ -60,6 +77,85 @@ def _supporters(p: Placement, placements: List[Placement]
         if a > EPS:
             out.append((q, a))
     return out
+
+
+def _assemblies(placements: List[Placement],
+                sup_cache: Dict[int, List[Tuple[Placement, float]]]
+                ) -> List[List[Placement]]:
+    """Partition placements into rigid assemblies — connected components under
+    the VERTICAL resting-on relation (``p`` rests on each supporter in
+    ``sup_cache[id(p)]``). Boxes touching only at a side face are NOT joined:
+    a vertical side face transmits no restraint against tipping outward, so
+    two side-by-side stacks each stand (or topple) on their own (round 8,
+    F36 — the corrected model; the naive face-adjacency union would wrongly
+    merge a disjoint counterweight and mask a local tip)."""
+    parent: Dict[int, int] = {id(p): id(p) for p in placements}
+
+    def find(a: int) -> int:
+        root = a
+        while parent[root] != root:
+            root = parent[root]
+        while parent[a] != root:          # path compression
+            parent[a], a = root, parent[a]
+        return root
+
+    for p in placements:
+        for s, _ in sup_cache[id(p)]:
+            ra, rb = find(id(p)), find(id(s))
+            if ra != rb:
+                parent[ra] = rb
+    comps: Dict[int, List[Placement]] = {}
+    for p in placements:
+        comps.setdefault(find(id(p)), []).append(p)
+    return list(comps.values())
+
+
+def _convex_hull(points: List[Tuple[float, float]]
+                 ) -> List[Tuple[float, float]]:
+    """Counter-clockwise convex hull (Andrew's monotone chain). Collinear
+    points are dropped; 1-2 unique points return as a degenerate hull."""
+    pts = sorted(set(points))
+    if len(pts) <= 2:
+        return pts
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: List[Tuple[float, float]] = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper: List[Tuple[float, float]] = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
+def _point_in_hull(pt: Tuple[float, float],
+                   hull: List[Tuple[float, float]]) -> bool:
+    """True if ``pt`` is inside or on a CCW convex ``hull`` (inclusive, with
+    an EPS margin scaled per edge so the tolerance is a real distance, not an
+    area). Degenerate hulls (point, segment) fall back to a bounding-box
+    membership test."""
+    x, y = pt
+    if len(hull) < 3:
+        xs = [h[0] for h in hull] or [0.0]
+        ys = [h[1] for h in hull] or [0.0]
+        return (min(xs) - EPS <= x <= max(xs) + EPS and
+                min(ys) - EPS <= y <= max(ys) + EPS)
+    n = len(hull)
+    for i in range(n):
+        ax, ay = hull[i]
+        bx, by = hull[(i + 1) % n]
+        # (B-A) x (P-A): >= 0 means P is left of / on the CCW edge (inside).
+        c = (bx - ax) * (y - ay) - (by - ay) * (x - ax)
+        edge = math.hypot(bx - ax, by - ay)
+        if c < -EPS * max(edge, 1.0):
+            return False
+    return True
 
 
 def validate(result: PackResult, pallet: Pallet,
@@ -228,8 +324,12 @@ def validate(result: PackResult, pallet: Pallet,
         #    don't check it here either.
         cog_under_overhang = (cfg.allow_pallet_overhang
                               and cfg.cog_envelope_fraction < 1.0)
+        # F37 (round 8): skip a single-placement pallet — the engines never
+        # CoG-check the first box (v2 _cog_ok `not self.placements`; the JIT
+        # new-bin path seeds the box with no envelope check), so flagging a
+        # lone corner box would reject an engine-legal placement.
         if (pallet.cog_x_range or pallet.cog_y_range or cog_under_overhang) \
-                and placements:
+                and len(placements) > 1:
             if total > 0:
                 max_w = (pallet.max_weight
                          if pallet.max_weight < float("inf") else None)
@@ -252,4 +352,42 @@ def validate(result: PackResult, pallet: Pallet,
                             f"{st.pallet_id}: CoG ({cx:.1f},{cy:.1f}) outside "
                             f"envelope x{x_range} y{y_range}"
                         )
+        # 8. Per-assembly toppling (round 8, F36 / ADR D21). Under overhang a
+        #    connected sub-assembly rooted on overhanging floor boxes can tip
+        #    over the deck edge while a disjoint counterweight keeps the
+        #    whole-pallet CoG (§7) central. Each rigid assembly's weighted CoG
+        #    must project within the convex hull of ITS OWN deck-contact
+        #    region. Gate == F30 (overhang + require_centroid_supported);
+        #    provably inert otherwise (module docstring). Assemblies join by
+        #    vertical support only, so a side-abutting counterweight stays a
+        #    separate body.
+        if cfg.allow_pallet_overhang and cfg.require_centroid_supported \
+                and len(placements) > 1:
+            for members in _assemblies(placements, sup_cache):
+                total_w = sum(m.box.weight for m in members)
+                if total_w <= 0:
+                    continue                 # weightless: nothing to topple
+                corners: List[Tuple[float, float]] = []
+                for m in members:
+                    if m.z > EPS:
+                        continue             # only floor boxes touch the deck
+                    x_lo, y_lo = max(m.x, 0.0), max(m.y, 0.0)
+                    x_hi = min(m.x2, float(pallet.length))
+                    y_hi = min(m.y2, float(pallet.width))
+                    if x_hi > x_lo and y_hi > y_lo:
+                        corners += [(x_lo, y_lo), (x_hi, y_lo),
+                                    (x_hi, y_hi), (x_lo, y_hi)]
+                if not corners:
+                    continue                 # floating assembly — §4 owns it
+                cx = sum(m.box.weight * (m.x + m.dx / 2.0)
+                         for m in members) / total_w
+                cy = sum(m.box.weight * (m.y + m.dy / 2.0)
+                         for m in members) / total_w
+                if not _point_in_hull((cx, cy), _convex_hull(corners)):
+                    ids = ",".join(sorted(m.box.id for m in members))
+                    errors.append(
+                        f"{st.pallet_id}: sub-assembly [{ids}] CoG "
+                        f"({cx:.1f},{cy:.1f}) projects past its deck-contact "
+                        f"region under overhang — the stack topples"
+                    )
     return errors
