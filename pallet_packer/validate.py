@@ -25,10 +25,13 @@ caller):
     or the box's own requires_full_support). Pure-geometric runs (BR
     benchmarks: sr=0, no centroid) legitimately float boxes — the engine
     does not enforce support there and neither do we.
-  * The CoG check applies only when the pallet carries EXPLICIT
-    cog_x_range/cog_y_range. The config-fraction envelope default (0.25)
-    is NOT checked here: the geometric decoder path never enforces it, so
-    validating it would reject engine-legal geometric packings.
+  * The CoG check applies when the pallet carries EXPLICIT
+    cog_x_range/cog_y_range, and (round 7, F35) when overhang is active with
+    a finite config-fraction envelope — the regime where the engine's
+    constraint decoders DO enforce the running-CoG bound. It is still NOT
+    checked for the config-fraction default on a purely geometric (no
+    overhang) packing: the geometric decoder path never enforces it, so
+    validating it there would reject engine-legal geometric packings.
 """
 from __future__ import annotations
 
@@ -214,10 +217,19 @@ def validate(result: PackResult, pallet: Pallet,
                         f"{load_on[id(q)]:.2f} kg > max_load_on_top "
                         f"{q.box.max_load_on_top}"
                     )
-        # 7. CoG envelope — only for EXPLICIT pallet cog ranges (see module
-        #    docstring). Mirrors PalletState._cog_ok on the final state,
-        #    including its min-load gate for finite weight caps.
-        if (pallet.cog_x_range or pallet.cog_y_range) and placements:
+        # 7. CoG envelope — for EXPLICIT pallet cog ranges, and (round 7,
+        #    F35 / ADR D20) for the config-fraction envelope UNDER OVERHANG.
+        #    Mirrors PalletState._cog_ok on the final state, including its
+        #    min-load gate for finite weight caps. The overhang gate keeps
+        #    this no-stricter-than-the-engine: overhang forces the
+        #    constraint-aware decoder path, which enforces the same running-CoG
+        #    envelope (a fraction < 1.0 with cog_active); a purely geometric
+        #    caller (no overhang) never has the engine enforce CoG, so we
+        #    don't check it here either.
+        cog_under_overhang = (cfg.allow_pallet_overhang
+                              and cfg.cog_envelope_fraction < 1.0)
+        if (pallet.cog_x_range or pallet.cog_y_range or cog_under_overhang) \
+                and placements:
             if total > 0:
                 max_w = (pallet.max_weight
                          if pallet.max_weight < float("inf") else None)
